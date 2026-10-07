@@ -6,7 +6,8 @@ import { Modal } from '../common/Modal';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { FormInput, DateInput, TextareaInput } from '../common/FormInputs';
 import { formatTanggal, formatAngka, getTodayDateString } from '../../utils/formatters';
-import { Egg, Plus, Edit2, Trash2, Eye, TrendingUp, Feather, CheckCircle2 } from 'lucide-react';
+import { exportToCsv, formatCsvDate, CsvColumn } from '../../utils/csvExport';
+import { Egg, Plus, Edit2, Trash2, Eye, TrendingUp, Feather, CheckCircle2, Download } from 'lucide-react';
 
 interface HarvestPageProps {
   isAddModalOpen?: boolean;
@@ -18,18 +19,58 @@ export const HarvestPage: React.FC<HarvestPageProps> = ({
   setIsAddModalOpen,
 }) => {
   const {
+    farm,
     harvests,
     addHarvest,
     updateHarvest,
     deleteHarvest,
     currentStock,
     activeProductiveChickens,
+    showToast,
   } = useApp();
 
   const [internalModalOpen, setInternalModalOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState<HarvestRecord | null>(null);
   const [detailRecord, setDetailRecord] = useState<HarvestRecord | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  const handleExportCSV = () => {
+    const columns: CsvColumn<HarvestRecord>[] = [
+      { key: 'no', label: 'No', format: (_v, _r, idx) => idx + 1 },
+      { key: 'date', label: 'Tanggal Panen', format: (v) => formatCsvDate(v) },
+      { key: 'productiveChickens', label: 'Ayam Produktif (Ekor)', format: (v) => Number(v) || 0 },
+      { key: 'totalWeight', label: 'Berat Panen (KG)', format: (v) => Number(v) || 0 },
+      { key: 'brokenWeight', label: 'Telur Rusak / Pecah (KG)', format: (v) => Number(v) || 0 },
+      { key: 'notes', label: 'Catatan', format: (v) => v || '-' },
+    ];
+
+    exportToCsv({
+      filename: `telurku_panen_${getTodayDateString()}`,
+      title: `${farm.name.toUpperCase()} - RIWAYAT PANEN TELUR`,
+      metadata: {
+        'Peternakan': farm.name,
+        'Pemilik': farm.ownerName,
+        'Total Panen': `${totalPanenKg} KG`,
+        'Tanggal Unduh': formatTanggal(getTodayDateString()),
+      },
+      columns,
+      data: harvests,
+      summaryRow: {
+        no: 'TOTAL',
+        date: `${harvests.length} Hari Panen`,
+        productiveChickens: `${activeProductiveChickens} Ekor`,
+        totalWeight: totalPanenKg,
+        brokenWeight: totalRusakKg,
+        notes: '-',
+      },
+      onSuccess: (fn, count) => {
+        showToast('success', 'Eksport CSV Berhasil', `File ${fn} (${count} baris) berhasil diunduh.`);
+      },
+      onError: (err) => {
+        showToast('error', 'Gagal Ekspor CSV', err);
+      },
+    });
+  };
 
   // Sync external prop if provided
   useEffect(() => {
@@ -146,13 +187,22 @@ export const HarvestPage: React.FC<HarvestPageProps> = ({
             Pencatatan hasil panen harian langsung dalam kilogram. Menambah stok telur otomatis.
           </p>
         </div>
-        <button
-          onClick={handleOpenAdd}
-          className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg shadow-2xs transition-colors self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>+ Tambah Panen</span>
-        </button>
+        <div className="flex items-center gap-2.5 self-start sm:self-auto">
+          <button
+            onClick={handleExportCSV}
+            className="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-semibold text-neutral-700 bg-white hover:bg-neutral-50 border border-neutral-300 rounded-lg shadow-2xs transition-colors"
+          >
+            <Download className="w-4 h-4 text-neutral-500" />
+            <span>Export CSV</span>
+          </button>
+          <button
+            onClick={handleOpenAdd}
+            className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg shadow-2xs transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            <span>+ Tambah Panen</span>
+          </button>
+        </div>
       </div>
 
       {/* Summary Banner Cards */}

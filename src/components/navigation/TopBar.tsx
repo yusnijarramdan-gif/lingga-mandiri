@@ -24,6 +24,10 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import PersonIcon from '@mui/icons-material/Person';
 import CalendarTodayOutlinedIcon from '@mui/icons-material/CalendarTodayOutlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
+import LoginIcon from '@mui/icons-material/Login';
+import LogoutIcon from '@mui/icons-material/Logout';
+import CloudDoneOutlinedIcon from '@mui/icons-material/CloudDoneOutlined';
+import SyncIcon from '@mui/icons-material/Sync';
 import { useApp } from '../../context/AppContext';
 import { formatTanggal, getTodayDateString } from '../../utils/formatters';
 import { NavTab, TAB_TITLES } from './navConfig';
@@ -44,7 +48,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   isMobile,
 }) => {
   const theme = useTheme();
-  const { farm, syncStatus, resetAllToDemoData, showToast } = useApp();
+  const { farm, syncStatus, user, userProfile, setIsAuthDialogOpen, signOut, dbLoading, refreshDatabaseData, showToast } = useApp();
   const [userMenuAnchor, setUserMenuAnchor] = useState<null | HTMLElement>(null);
   const [notifAnchor, setNotifAnchor] = useState<null | HTMLElement>(null);
 
@@ -150,6 +154,38 @@ export const TopBar: React.FC<TopBarProps> = ({
 
         {/* Right Actions */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 1.5 } }}>
+          {/* Supabase Sync Button */}
+          <Tooltip title={dbLoading ? 'Sinkronisasi...' : 'Sinkronkan Database Supabase'} arrow>
+            <IconButton
+              size="small"
+              onClick={async () => {
+                await refreshDatabaseData();
+                showToast('success', 'Data Disinkronkan', 'Data terbaru dari Supabase telah dimuat.');
+              }}
+              sx={{
+                color: theme.palette.success.main,
+                border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
+                width: 36,
+                height: 36,
+                backgroundColor: alpha(theme.palette.success.main, 0.04),
+                '&:hover': {
+                  backgroundColor: alpha(theme.palette.success.main, 0.1),
+                },
+              }}
+            >
+              <SyncIcon
+                fontSize="small"
+                sx={{
+                  animation: dbLoading ? 'spin 1s linear infinite' : 'none',
+                  '@keyframes spin': {
+                    '0%': { transform: 'rotate(0deg)' },
+                    '100%': { transform: 'rotate(360deg)' },
+                  },
+                }}
+              />
+            </IconButton>
+          </Tooltip>
+
           {/* Notifications */}
           <Tooltip title="Notifikasi Sistem" arrow>
             <IconButton
@@ -173,12 +209,12 @@ export const TopBar: React.FC<TopBarProps> = ({
           </Tooltip>
 
           {/* User Avatar & Menu */}
-          <Tooltip title="Menu Peternak" arrow>
+          <Tooltip title={user ? `Akun: ${user.email}` : 'Masuk / Akun'} arrow>
             <IconButton
               onClick={handleOpenUserMenu}
               sx={{
                 p: 0,
-                border: `2px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+                border: `2px solid ${alpha(theme.palette.primary.main, 0.3)}`,
                 '&:hover': {
                   borderColor: theme.palette.primary.main,
                 },
@@ -188,12 +224,12 @@ export const TopBar: React.FC<TopBarProps> = ({
                 sx={{
                   width: 34,
                   height: 34,
-                  bgcolor: theme.palette.primary.main,
+                  bgcolor: user ? theme.palette.primary.main : '#64748B',
                   fontSize: '0.875rem',
                   fontWeight: 700,
                 }}
               >
-                {farm.ownerName.charAt(0)}
+                {user ? (user.email?.charAt(0).toUpperCase() || 'U') : farm.ownerName.charAt(0)}
               </Avatar>
             </IconButton>
           </Tooltip>
@@ -213,10 +249,20 @@ export const TopBar: React.FC<TopBarProps> = ({
               Notifikasi Peternakan
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Aktivitas data real-time
+              Aktivitas data real-time Supabase
             </Typography>
           </Box>
           <Divider />
+          <MenuItem onClick={handleCloseNotif} sx={{ py: 1.25 }}>
+            <Box>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                Koneksi Supabase Aktif
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Data disimpan langsung ke cloud Supabase (anggsdesivvelfaawsah).
+              </Typography>
+            </Box>
+          </MenuItem>
           <MenuItem onClick={handleCloseNotif} sx={{ py: 1.25 }}>
             <Box>
               <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -224,16 +270,6 @@ export const TopBar: React.FC<TopBarProps> = ({
               </Typography>
               <Typography variant="caption" color="text.secondary">
                 Stok telur otomatis disesuaikan dari panen & penjualan.
-              </Typography>
-            </Box>
-          </MenuItem>
-          <MenuItem onClick={handleCloseNotif} sx={{ py: 1.25 }}>
-            <Box>
-              <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                Konversi Modal Otomatis
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Alokasi pakan 63%, ayam 20%, upah 12%, listrik 0.5%, air 1%, vaksin 3.5%.
               </Typography>
             </Box>
           </MenuItem>
@@ -246,17 +282,46 @@ export const TopBar: React.FC<TopBarProps> = ({
           onClose={handleCloseUserMenu}
           transformOrigin={{ horizontal: 'right', vertical: 'top' }}
           anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-          slotProps={{ paper: { sx: { width: 240, p: 0.5 } } }}
+          slotProps={{ paper: { sx: { width: 250, p: 0.5 } } }}
         >
           <Box sx={{ p: 1.5 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-              {farm.ownerName}
+              {user ? (userProfile?.fullName || user.email) : farm.ownerName}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {farm.name}
+              {user ? user.email : farm.name}
             </Typography>
           </Box>
           <Divider sx={{ my: 0.5 }} />
+
+          {user ? (
+            <MenuItem
+              onClick={() => {
+                handleCloseUserMenu();
+                signOut();
+              }}
+            >
+              <ListItemIcon>
+                <LogoutIcon fontSize="small" color="error" />
+              </ListItemIcon>
+              <ListItemText
+                primary="Keluar (Logout)"
+                slotProps={{ primary: { sx: { color: 'error.main', fontWeight: 600 } } }}
+              />
+            </MenuItem>
+          ) : (
+            <MenuItem
+              onClick={() => {
+                handleCloseUserMenu();
+                setIsAuthDialogOpen(true);
+              }}
+            >
+              <ListItemIcon>
+                <LoginIcon fontSize="small" color="primary" />
+              </ListItemIcon>
+              <ListItemText primary="Masuk / Daftar Akun" />
+            </MenuItem>
+          )}
 
           <MenuItem
             onClick={() => {
@@ -267,15 +332,15 @@ export const TopBar: React.FC<TopBarProps> = ({
             <ListItemIcon>
               <SettingsOutlinedIcon fontSize="small" />
             </ListItemIcon>
-            <ListItemText primary="Pengaturan Profil, Logo & Modal" />
+            <ListItemText primary="Pengaturan & Profil" />
           </MenuItem>
 
           <Divider sx={{ my: 0.5 }} />
 
           <Box sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
-            <StorageOutlinedIcon fontSize="small" sx={{ color: theme.palette.text.secondary }} />
+            <CloudDoneOutlinedIcon fontSize="small" color="success" />
             <Typography variant="caption" color="text.secondary">
-              Status Database: {syncStatus === 'synced' ? 'Supabase Terhubung' : 'Penyimpanan Lokal'}
+              Supabase Cloud Terhubung
             </Typography>
           </Box>
         </Menu>

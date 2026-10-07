@@ -31,8 +31,19 @@ import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import EggAltIcon from '@mui/icons-material/EggAlt';
 import DataObjectOutlinedIcon from '@mui/icons-material/DataObjectOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
+import SyncIcon from '@mui/icons-material/Sync';
+import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
+import ErrorOutlineOutlinedIcon from '@mui/icons-material/ErrorOutlineOutlined';
+import CheckCircleOutlinedIcon from '@mui/icons-material/CheckCircleOutlined';
+import CircularProgress from '@mui/material/CircularProgress';
 import { useApp } from '../../context/AppContext';
 import { validatePercentageSum } from '../../utils/calculations';
+import {
+  testSupabaseConnection,
+  syncAllLocalDataToSupabase,
+  uploadLogoToSupabaseStorage,
+  DatabaseDiagnostics,
+} from '../../services/supabaseService';
 
 export const SettingsPage: React.FC = () => {
   const theme = useTheme();
@@ -46,14 +57,27 @@ export const SettingsPage: React.FC = () => {
     saveSupabaseConfig,
     syncStatus,
     showToast,
+    chickens,
+    harvests,
+    sales,
+    expenses,
+    allocations,
+    refreshDatabaseData,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'logo' | 'profile' | 'allocation' | 'supabase' | 'sql'>('logo');
+  const [activeTab, setActiveTab] = useState<'logo' | 'profile' | 'allocation' | 'supabase' | 'sql'>('supabase');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Diagnostics State
+  const [diagnostics, setDiagnostics] = useState<DatabaseDiagnostics | null>(null);
+  const [testingConnection, setTestingConnection] = useState<boolean>(false);
+  const [syncingData, setSyncingData] = useState<boolean>(false);
 
   // Logo state
   const [logoPreview, setLogoPreview] = useState<string>(farm.logoUrl || '');
   const [logoInputUrl, setLogoInputUrl] = useState<string>(farm.logoUrl || '');
+  const [selectedLogoFile, setSelectedLogoFile] = useState<File | null>(null);
+  const [isUploadingLogo, setIsUploadingLogo] = useState<boolean>(false);
 
   // Allocation form state
   const [allocationForm, setAllocationForm] = useState({
@@ -88,10 +112,11 @@ export const SettingsPage: React.FC = () => {
   const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 2 * 1024 * 1024) {
-        showToast('error', 'Ukuran File Terlalu Besar', 'Maksimal ukuran file logo adalah 2 MB.');
+      if (file.size > 3 * 1024 * 1024) {
+        showToast('error', 'Ukuran File Terlalu Besar', 'Maksimal ukuran file logo adalah 3 MB.');
         return;
       }
+      setSelectedLogoFile(file);
       const reader = new FileReader();
       reader.onload = (event) => {
         const result = event.target?.result as string;
@@ -102,15 +127,32 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const handleSaveLogo = () => {
-    updateFarmProfile({ logoUrl: logoPreview });
-    showToast('success', 'Logo Disimpan', 'Logo aplikasi Lingga Mandiri Farm berhasil diperbarui.');
+  const handleSaveLogo = async () => {
+    setIsUploadingLogo(true);
+    let finalLogoUrl = logoPreview;
+
+    if (selectedLogoFile) {
+      const uploadRes = await uploadLogoToSupabaseStorage(selectedLogoFile, farm.id);
+      if (uploadRes.url) {
+        finalLogoUrl = uploadRes.url;
+        setLogoPreview(uploadRes.url);
+        setLogoInputUrl(uploadRes.url);
+        showToast('success', 'Upload Supabase Berhasil', 'File logo tersimpan di storage bucket app-files.');
+      } else {
+        console.warn('Storage bucket note:', uploadRes.error);
+        showToast('info', 'Logo Disimpan Lokal', 'Logo aktif di aplikasi. Pastikan bucket app-files dibuat di Supabase.');
+      }
+    }
+
+    await updateFarmProfile({ logoUrl: finalLogoUrl });
+    setIsUploadingLogo(false);
   };
 
-  const handleRemoveLogo = () => {
+  const handleRemoveLogo = async () => {
+    setSelectedLogoFile(null);
     setLogoPreview('');
     setLogoInputUrl('');
-    updateFarmProfile({ logoUrl: '' });
+    await updateFarmProfile({ logoUrl: '' });
     if (fileInputRef.current) fileInputRef.current.value = '';
     showToast('info', 'Logo Dihapus', 'Kembali menggunakan icon logo default.');
   };
@@ -310,16 +352,20 @@ export const SettingsPage: React.FC = () => {
                     />
                   </Box>
 
-                  <Box sx={{ pt: 1 }}>
+                  <Box sx={{ pt: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
                     <Button
                       variant="contained"
                       color="primary"
+                      disabled={isUploadingLogo}
                       onClick={handleSaveLogo}
-                      startIcon={<SaveOutlinedIcon />}
+                      startIcon={isUploadingLogo ? <CircularProgress size={16} color="inherit" /> : <SaveOutlinedIcon />}
                       sx={{ px: 3 }}
                     >
-                      Simpan Logo
+                      {isUploadingLogo ? 'Mengunggah ke Supabase...' : 'Simpan & Upload Logo'}
                     </Button>
+                    <Typography variant="caption" color="text.secondary">
+                      File otomatis diunggah ke storage bucket <code>app-files</code> Supabase.
+                    </Typography>
                   </Box>
                 </Box>
               </Grid>
@@ -540,18 +586,159 @@ export const SettingsPage: React.FC = () => {
         {/* TAB 4: DATABASE SUPABASE */}
         {activeTab === 'supabase' && (
           <Box sx={{ p: { xs: 2.5, sm: 3.5 } }}>
-            <Box sx={{ mb: 3 }}>
-              <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                Koneksi Database Cloud (Supabase)
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Aplikasi bekerja offline-first dengan LocalStorage dan siap disinkronkan ke Supabase.
-              </Typography>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 3 }}>
+              <Box>
+                <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                  Koneksi Database Cloud (Supabase)
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Aplikasi terhubung ke database Supabase Anda untuk sinkronisasi data real-time.
+                </Typography>
+              </Box>
+              <Chip
+                label={sbForm.url ? 'Supabase Terhubung' : 'Mode Offline Local'}
+                color={sbForm.url ? 'success' : 'default'}
+                icon={<CheckCircleIcon />}
+                size="small"
+                sx={{ fontWeight: 600 }}
+              />
             </Box>
 
-            <Alert severity="info" sx={{ mb: 3 }}>
-              Data saat ini otomatis disimpan di browser Anda (LocalStorage) secara persisten dan instan.
+            <Alert severity="success" sx={{ mb: 3 }}>
+              Database Cloud Supabase aktif: <strong>https://anggsdesivvelfaawsah.supabase.co</strong>
             </Alert>
+
+            {/* Connection Test & Diagnostic Panel */}
+            <Paper
+              elevation={0}
+              sx={{
+                p: 2.5,
+                mb: 3,
+                borderRadius: '12px',
+                border: `1px solid ${theme.palette.divider}`,
+                backgroundColor: alpha(theme.palette.primary.main, 0.02),
+              }}
+            >
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1.5 }}>
+                <Box>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                    Status Diagnostik 7 Tabel Database
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Periksa apakah tabel database di Supabase sudah siap menerima data
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    disabled={testingConnection}
+                    onClick={async () => {
+                      setTestingConnection(true);
+                      const diag = await testSupabaseConnection();
+                      setDiagnostics(diag);
+                      setTestingConnection(false);
+                      if (diag.allReady) {
+                        showToast('success', 'Koneksi Berhasil!', 'Semua 7 tabel di Supabase siap digunakan.');
+                      } else {
+                        showToast('warning', 'Pemeriksaan Selesai', diag.message);
+                      }
+                    }}
+                    startIcon={testingConnection ? <CircularProgress size={16} /> : <CheckCircleOutlinedIcon />}
+                  >
+                    {testingConnection ? 'Memeriksa...' : 'Uji Koneksi & Tabel'}
+                  </Button>
+
+                  <Button
+                    variant="contained"
+                    size="small"
+                    color="secondary"
+                    disabled={syncingData}
+                    onClick={async () => {
+                      setSyncingData(true);
+                      const res = await syncAllLocalDataToSupabase(
+                        farm,
+                        settings,
+                        chickens,
+                        harvests,
+                        sales,
+                        expenses,
+                        allocations
+                      );
+                      setSyncingData(false);
+                      if (res.success) {
+                        await refreshDatabaseData();
+                        showToast('success', 'Data Berhasil Disinkronkan!', 'Seluruh data peternakan, ayam, panen, & penjualan terunggah ke Supabase.');
+                      } else {
+                        showToast('error', 'Sinkronisasi Gagal', res.error || 'Pastikan tabel SQL sudah dibuat di Supabase.');
+                      }
+                    }}
+                    startIcon={syncingData ? <CircularProgress size={16} color="inherit" /> : <SyncIcon />}
+                  >
+                    {syncingData ? 'Mengunggah...' : 'Unggah Data ke Supabase'}
+                  </Button>
+                </Box>
+              </Box>
+
+              {diagnostics && (
+                <Box sx={{ mt: 2 }}>
+                  <Alert
+                    severity={diagnostics.allReady ? 'success' : 'info'}
+                    sx={{ mb: 2 }}
+                    action={
+                      !diagnostics.allReady ? (
+                        <Button
+                          color="inherit"
+                          size="small"
+                          onClick={() => setActiveTab('sql')}
+                        >
+                          Buka Tab SQL
+                        </Button>
+                      ) : undefined
+                    }
+                  >
+                    {diagnostics.message}
+                  </Alert>
+
+                  <Grid container spacing={1.5}>
+                    {Object.entries(diagnostics.tables).map(([tableName, statusInfo]) => (
+                      <Grid size={{ xs: 12, sm: 6, md: 4 }} key={tableName}>
+                        <Paper
+                          elevation={0}
+                          sx={{
+                            p: 1.25,
+                            border: `1px solid ${
+                              statusInfo.status === 'ready'
+                                ? alpha(theme.palette.success.main, 0.3)
+                                : alpha(theme.palette.warning.main, 0.4)
+                            }`,
+                            backgroundColor:
+                              statusInfo.status === 'ready'
+                                ? alpha(theme.palette.success.main, 0.05)
+                                : alpha(theme.palette.warning.main, 0.05),
+                            borderRadius: '8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          <Typography variant="body2" sx={{ fontWeight: 600, fontFamily: 'monospace' }}>
+                            {tableName}
+                          </Typography>
+                          <Chip
+                            label={statusInfo.status === 'ready' ? 'Siap (OK)' : 'Belum Ada'}
+                            size="small"
+                            color={statusInfo.status === 'ready' ? 'success' : 'warning'}
+                            icon={statusInfo.status === 'ready' ? <CheckCircleIcon /> : <WarningAmberOutlinedIcon />}
+                            sx={{ height: 22, fontSize: '0.7rem' }}
+                          />
+                        </Paper>
+                      </Grid>
+                    ))}
+                  </Grid>
+                </Box>
+              )}
+            </Paper>
 
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
               <TextField
@@ -560,6 +747,7 @@ export const SettingsPage: React.FC = () => {
                 placeholder="https://xyzproject.supabase.co"
                 value={sbForm.url}
                 onChange={(e) => setSbForm({ ...sbForm, url: e.target.value })}
+                helperText="URL endpoint API Supabase Anda"
               />
 
               <TextField
@@ -568,15 +756,16 @@ export const SettingsPage: React.FC = () => {
                 placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
                 value={sbForm.anonKey}
                 onChange={(e) => setSbForm({ ...sbForm, anonKey: e.target.value })}
+                helperText="Publishable / Anon Key project Supabase"
               />
 
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Box sx={{ display: 'flex', gap: 1.5, justifyContent: 'flex-end', mt: 1 }}>
                 <Button
                   variant="contained"
                   color="primary"
                   onClick={() => {
                     saveSupabaseConfig(sbForm.url, sbForm.anonKey);
-                    showToast('success', 'Konfigurasi Disimpan');
+                    showToast('success', 'Konfigurasi Supabase Berhasil Disimpan', 'Koneksi ke project https://anggsdesivvelfaawsah.supabase.co aktif.');
                   }}
                   startIcon={<SaveOutlinedIcon />}
                 >

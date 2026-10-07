@@ -1,11 +1,48 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
+import {
+  Box,
+  Typography,
+  Card,
+  CardContent,
+  Grid,
+  Button,
+  Chip,
+  Paper,
+  Divider,
+  Switch,
+  FormControlLabel,
+  TextField,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
+  TableContainer,
+  TablePagination,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Tooltip,
+  IconButton,
+  Alert,
+  useTheme,
+  alpha,
+} from '@mui/material';
+import AutorenewOutlinedIcon from '@mui/icons-material/AutorenewOutlined';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import FlashOnIcon from '@mui/icons-material/FlashOn';
+import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
+import DeleteIcon from '@mui/icons-material/Delete';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import PointOfSaleOutlinedIcon from '@mui/icons-material/PointOfSaleOutlined';
+import PaymentsOutlinedIcon from '@mui/icons-material/PaymentsOutlined';
+import TrendingUpOutlinedIcon from '@mui/icons-material/TrendingUpOutlined';
+import CalculateOutlinedIcon from '@mui/icons-material/CalculateOutlined';
+import CheckCircleOutlinedIcon from '@mui/icons-material/CheckCircleOutlined';
+import confetti from 'canvas-confetti';
 import { useApp } from '../../context/AppContext';
 import { ProfitAllocation } from '../../types';
-import { ProgressBar } from '../common/ProgressBar';
-import { DataTable, Column } from '../common/DataTable';
-import { Modal } from '../common/Modal';
-import { ConfirmDialog } from '../common/ConfirmDialog';
-import { CurrencyInput, DateInput, TextareaInput } from '../common/FormInputs';
 import { calculateProfitAllocation } from '../../utils/calculations';
 import {
   formatRupiah,
@@ -14,23 +51,8 @@ import {
   formatTanggalSingkat,
   getTodayDateString,
 } from '../../utils/formatters';
-import confetti from 'canvas-confetti';
-import {
-  Percent,
-  Sparkles,
-  CheckCircle2,
-  Trash2,
-  Eye,
-  Settings,
-  HelpCircle,
-  Coins,
-  Zap,
-  TrendingUp,
-  Receipt,
-  ShoppingBag,
-  ArrowRight,
-} from 'lucide-react';
-import { NavTab } from '../common/Sidebar';
+import { exportToCsv, formatCsvDate, CsvColumn } from '../../utils/csvExport';
+import { NavTab } from '../navigation/navConfig';
 
 interface CapitalConversionPageProps {
   initialProfit?: number;
@@ -43,12 +65,15 @@ export const CapitalConversionPage: React.FC<CapitalConversionPageProps> = ({
   onNavigateToSettings,
   onNavigate,
 }) => {
+  const theme = useTheme();
   const {
+    farm,
     settings,
     allocations,
     addAllocation,
     deleteAllocation,
-    monthProfitAmount,
+    sales,
+    expenses,
     todaySalesAmount,
     todayExpensesAmount,
     todayProfitAmount,
@@ -56,33 +81,61 @@ export const CapitalConversionPage: React.FC<CapitalConversionPageProps> = ({
     convertDailyProfitToCapital,
     autoDailyConversionEnabled,
     setAutoDailyConversionEnabled,
+    showToast,
   } = useApp();
 
-  // Nominal default yang akan dikonversi secara kustom
-  const defaultAmount = initialProfit || (todayProfitAmount > 0 ? todayProfitAmount : 10000000);
-  const [profitToConvert, setProfitToConvert] = useState<number>(defaultAmount);
-  const [conversionDate, setConversionDate] = useState<string>(getTodayDateString());
-  const [notes, setNotes] = useState<string>('Alokasi modal operasional');
+  // Selected date to convert
+  const [selectedDate, setSelectedDate] = useState<string>(todayActiveDateStr || getTodayDateString());
 
+  // Custom conversion state
+  const defaultAmount = initialProfit || (todayProfitAmount > 0 ? todayProfitAmount : 5000000);
+  const [customProfitInput, setCustomProfitInput] = useState<number>(defaultAmount);
+  const [customDate, setCustomDate] = useState<string>(getTodayDateString());
+  const [customNotes, setCustomNotes] = useState<string>('Alokasi modal operasional kustom');
+
+  // Modal detail & delete state
   const [detailModalRecord, setDetailModalRecord] = useState<ProfitAllocation | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
-  // Perhitungan pembagian alokasi untuk laba harian
-  const dailyAllocationCalc = calculateProfitAllocation(
-    Math.max(0, todayProfitAmount),
-    settings
-  );
+  // Pagination state
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
 
-  // Perhitungan pembagian alokasi kustom
-  const customAllocationCalc = calculateProfitAllocation(profitToConvert, settings);
+  // Calculate selected date sales, expenses, and net profit
+  const selectedDateSales = useMemo(() => {
+    return sales
+      .filter((s) => s.date === selectedDate)
+      .reduce((acc, s) => acc + (Number(s.total) || 0), 0);
+  }, [sales, selectedDate]);
 
-  const handleExecuteDailyConversion = () => {
-    const res = convertDailyProfitToCapital();
+  const selectedDateExpenses = useMemo(() => {
+    return expenses
+      .filter((e) => e.date === selectedDate)
+      .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+  }, [expenses, selectedDate]);
+
+  const selectedDateNetProfit = useMemo(() => {
+    return Math.max(0, selectedDateSales - selectedDateExpenses);
+  }, [selectedDateSales, selectedDateExpenses]);
+
+  // Allocation calculation for selected auto date
+  const autoAllocationCalc = useMemo(() => {
+    return calculateProfitAllocation(selectedDateNetProfit, settings);
+  }, [selectedDateNetProfit, settings]);
+
+  // Allocation calculation for custom amount
+  const customAllocationCalc = useMemo(() => {
+    return calculateProfitAllocation(customProfitInput, settings);
+  }, [customProfitInput, settings]);
+
+  // Execute Auto Conversion for selected date
+  const handleExecuteAutoConversion = async () => {
+    const res = await convertDailyProfitToCapital(selectedDate);
     if (res.success) {
       try {
         confetti({
-          particleCount: 80,
-          spread: 60,
+          particleCount: 90,
+          spread: 70,
           origin: { y: 0.6 },
           colors: ['#F59E0B', '#10B981', '#3B82F6'],
         });
@@ -92,15 +145,16 @@ export const CapitalConversionPage: React.FC<CapitalConversionPageProps> = ({
     }
   };
 
-  const handleConvertAndSaveCustom = () => {
-    if (profitToConvert <= 0) {
-      alert('Nominal keuntungan yang akan dikonversi harus lebih dari Rp 0.');
+  // Execute Custom Conversion
+  const handleSaveCustomConversion = async () => {
+    if (customProfitInput <= 0) {
+      showToast('error', 'Nominal Tidak Valid', 'Nominal laba yang akan dikonversi harus lebih dari Rp 0.');
       return;
     }
 
-    addAllocation({
-      date: conversionDate,
-      profit: profitToConvert,
+    await addAllocation({
+      date: customDate,
+      profit: customProfitInput,
       feedAmount: customAllocationCalc.feedAmount,
       chickenAmount: customAllocationCalc.chickenAmount,
       laborAmount: customAllocationCalc.laborAmount,
@@ -113,7 +167,7 @@ export const CapitalConversionPage: React.FC<CapitalConversionPageProps> = ({
       electricityPercentage: settings.electricityPercentage,
       waterPercentage: settings.waterPercentage,
       vitaminPercentage: settings.vitaminPercentage,
-      notes,
+      notes: customNotes,
     });
 
     try {
@@ -128,419 +182,557 @@ export const CapitalConversionPage: React.FC<CapitalConversionPageProps> = ({
     }
   };
 
-  const columns: Column<ProfitAllocation>[] = [
-    {
-      header: 'Tanggal',
-      accessor: (r) => (
-        <div>
-          <span className="font-semibold text-neutral-900 block">{formatTanggalSingkat(r.date)}</span>
-          <span className="text-[11px] text-neutral-400">{r.notes?.includes('Keuntungan Harian') ? '⚡ Harian Otomatis' : 'Manual'}</span>
-        </div>
-      ),
-    },
-    {
-      header: 'Keuntungan',
-      accessor: (r) => (
-        <span className="font-bold text-neutral-900">{formatRupiahCompact(r.profit)}</span>
-      ),
-      align: 'right',
-    },
-    {
-      header: 'Pakan (63%)',
-      accessor: (r) => formatRupiahCompact(r.feedAmount),
-      align: 'right',
-    },
-    {
-      header: 'Ayam (20%)',
-      accessor: (r) => formatRupiahCompact(r.chickenAmount),
-      align: 'right',
-    },
-    {
-      header: 'Upah (12%)',
-      accessor: (r) => formatRupiahCompact(r.laborAmount),
-      align: 'right',
-    },
-    {
-      header: 'Total Alokasi',
-      accessor: (r) => (
-        <span className="font-bold text-amber-700">{formatRupiahCompact(r.profit)}</span>
-      ),
-      align: 'right',
-    },
+  // Export CSV
+  const handleExportCSV = () => {
+    const columns: CsvColumn<ProfitAllocation>[] = [
+      { key: 'no', label: 'No', format: (_v, _r, idx) => idx + 1 },
+      { key: 'date', label: 'Tanggal Alokasi', format: (v) => formatCsvDate(v) },
+      { key: 'profit', label: 'Keuntungan Bersih (Rp)', format: (v) => Number(v) || 0 },
+      { key: 'feedAmount', label: 'Pakan (63%) (Rp)', format: (v) => Number(v) || 0 },
+      { key: 'chickenAmount', label: 'Ayam (20%) (Rp)', format: (v) => Number(v) || 0 },
+      { key: 'laborAmount', label: 'Upah (12%) (Rp)', format: (v) => Number(v) || 0 },
+      { key: 'electricityAmount', label: 'Listrik (0.5%) (Rp)', format: (v) => Number(v) || 0 },
+      { key: 'waterAmount', label: 'Air (1.0%) (Rp)', format: (v) => Number(v) || 0 },
+      { key: 'vitaminAmount', label: 'Vitamin & Vaksin (3.5%) (Rp)', format: (v) => Number(v) || 0 },
+      { key: 'notes', label: 'Catatan', format: (v) => v || '-' },
+    ];
+
+    const totalAlokasi = allocations.reduce((acc, a) => acc + a.profit, 0);
+
+    exportToCsv({
+      filename: `telurku_konversi_modal_${getTodayDateString()}`,
+      title: `${farm.name.toUpperCase()} - RIWAYAT KONVERSI MODAL OPERASIONAL`,
+      metadata: {
+        'Peternakan': farm.name,
+        'Pemilik': farm.ownerName,
+        'Total Riwayat Alokasi': formatRupiah(totalAlokasi),
+        'Tanggal Ekspor': formatTanggal(getTodayDateString()),
+      },
+      columns,
+      data: allocations,
+      summaryRow: {
+        no: 'TOTAL',
+        date: `${allocations.length} Transaksi`,
+        profit: totalAlokasi,
+        feedAmount: allocations.reduce((acc, a) => acc + a.feedAmount, 0),
+        chickenAmount: allocations.reduce((acc, a) => acc + a.chickenAmount, 0),
+        laborAmount: allocations.reduce((acc, a) => acc + a.laborAmount, 0),
+        electricityAmount: allocations.reduce((acc, a) => acc + a.electricityAmount, 0),
+        waterAmount: allocations.reduce((acc, a) => acc + a.waterAmount, 0),
+        vitaminAmount: allocations.reduce((acc, a) => acc + a.vitaminAmount, 0),
+        notes: '-',
+      },
+      onSuccess: (fn, count) => {
+        showToast('success', 'Eksport CSV Berhasil', `File ${fn} (${count} baris) berhasil diunduh.`);
+      },
+      onError: (err) => {
+        showToast('error', 'Gagal Ekspor CSV', err);
+      },
+    });
+  };
+
+  const paginatedAllocations = allocations.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+
+  const allocationBuckets = [
+    { label: 'Pakan', pct: settings.feedPercentage, color: '#D97706', amount: autoAllocationCalc.feedAmount, icon: '🌽' },
+    { label: 'Pembelian Ayam', pct: settings.chickenPercentage, color: '#0284C7', amount: autoAllocationCalc.chickenAmount, icon: '🐔' },
+    { label: 'Upah Tenaga Kerja', pct: settings.laborPercentage, color: '#16A34A', amount: autoAllocationCalc.laborAmount, icon: '💼' },
+    { label: 'Listrik', pct: settings.electricityPercentage, color: '#EAB308', amount: autoAllocationCalc.electricityAmount, icon: '⚡' },
+    { label: 'Air', pct: settings.waterPercentage, color: '#06B6D4', amount: autoAllocationCalc.waterAmount, icon: '💧' },
+    { label: 'Vitamin & Vaksin', pct: settings.vitaminPercentage, color: '#9333EA', amount: autoAllocationCalc.vitaminAmount, icon: '💊' },
   ];
 
   return (
-    <div className="space-y-6">
-      {/* Title */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl sm:text-2xl font-black text-neutral-900 tracking-tight">
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      {/* Header */}
+      <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, justifyContent: 'space-between', alignItems: { sm: 'center' }, gap: 2 }}>
+        <Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography variant="h5" sx={{ fontWeight: 800, color: theme.palette.text.primary, letterSpacing: '-0.02em' }}>
               Konversi Keuntungan Menjadi Modal
-            </h2>
-            <span className="px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider text-amber-800 bg-amber-100 rounded-md">
-              Fitur Utama
-            </span>
-          </div>
-          <p className="text-sm text-neutral-500 mt-0.5">
-            Otomatisasi pembagian laba bersih harian menjadi pos anggaran operasional dan catatkan langsung ke riwayat modal.
-          </p>
-        </div>
+            </Typography>
+            <Chip label="Auto Engine" color="primary" size="small" sx={{ fontWeight: 700, fontSize: '0.72rem' }} />
+          </Box>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+            Otomatisasi pembagian laba bersih harian menjadi pos anggaran operasional dan catat langsung ke database Supabase.
+          </Typography>
+        </Box>
 
-        <button
+        <Button
+          variant="outlined"
+          color="inherit"
           onClick={onNavigateToSettings}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-neutral-700 bg-white border border-neutral-300 hover:bg-neutral-50 rounded-lg shadow-2xs transition-colors self-start sm:self-auto"
+          startIcon={<SettingsOutlinedIcon />}
+          sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}
         >
-          <Settings className="w-3.5 h-3.5 text-neutral-500" />
-          <span>Atur Persentase Pos</span>
-        </button>
-      </div>
+          Atur Persentase Pos
+        </Button>
+      </Box>
 
-      {/* 1. KARTU UTAMA: KONVERSI OTOMATIS DARI KEUNTUNGAN HARIAN (Sesuai Permintaan User) */}
-      <div className="bg-gradient-to-br from-amber-50 via-white to-amber-50/40 rounded-2xl border-2 border-amber-300 p-6 sm:p-7 shadow-xs space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-amber-200/80">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold shadow-xs">
-              <Zap className="w-5 h-5 fill-white" />
-            </div>
-            <div>
-              <h3 className="text-base sm:text-lg font-bold text-neutral-900 tracking-tight flex items-center gap-2">
-                <span>Konversi Otomatis Keuntungan Harian</span>
-                <span className="text-xs font-semibold px-2 py-0.5 bg-amber-200/70 text-amber-950 rounded-md">
-                  Langsung Catat
-                </span>
-              </h3>
-              <p className="text-xs text-neutral-500">
-                Periode transaksi harian: <strong>{formatTanggal(todayActiveDateStr)}</strong>
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-neutral-600 font-medium cursor-pointer flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
-              <input
-                type="checkbox"
-                checked={autoDailyConversionEnabled}
-                onChange={(e) => setAutoDailyConversionEnabled(e.target.checked)}
-                className="rounded text-amber-600 focus:ring-amber-500"
-              />
-              <span>Auto-Sync Laba Harian</span>
-            </label>
-          </div>
-        </div>
-
-        {/* 3 Metric Box Hari Ini: Omzet, Pengeluaran, Laba Bersih */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-white p-4 rounded-xl border border-neutral-200/80 shadow-2xs">
-            <span className="text-xs text-neutral-500 font-medium flex items-center gap-1.5">
-              <ShoppingBag className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Omzet Penjualan Hari Ini</span>
-            </span>
-            <p className="text-xl font-bold text-neutral-900 font-mono tabular-nums mt-1">
-              {formatRupiah(todaySalesAmount)}
-            </p>
-          </div>
-
-          <div className="bg-white p-4 rounded-xl border border-neutral-200/80 shadow-2xs">
-            <span className="text-xs text-neutral-500 font-medium flex items-center gap-1.5">
-              <Receipt className="w-3.5 h-3.5 text-rose-600" />
-              <span>Pengeluaran Hari Ini</span>
-            </span>
-            <p className="text-xl font-bold text-neutral-900 font-mono tabular-nums mt-1">
-              {formatRupiah(todayExpensesAmount)}
-            </p>
-          </div>
-
-          <div className="bg-amber-100/50 p-4 rounded-xl border border-amber-300 shadow-2xs">
-            <span className="text-xs text-amber-900 font-bold flex items-center gap-1.5">
-              <TrendingUp className="w-3.5 h-3.5 text-amber-700" />
-              <span>Keuntungan Bersih Hari Ini</span>
-            </span>
-            <p className="text-2xl font-black text-amber-950 font-mono tabular-nums mt-1">
-              {formatRupiah(todayProfitAmount)}
-            </p>
-          </div>
-        </div>
-
-        {/* Preview Alokasi Modal Otomatis Hari Ini */}
-        {todayProfitAmount > 0 ? (
-          <div className="bg-white p-5 rounded-xl border border-neutral-200/90 space-y-4">
-            <div className="flex items-center justify-between pb-1">
-              <span className="text-xs font-bold uppercase tracking-wider text-neutral-700">
-                Preview Distribusi Modal Otomatis dari Laba Hari Ini:
-              </span>
-              <span className="text-xs font-mono font-bold text-amber-700">
-                Total: {formatRupiah(todayProfitAmount)}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3.5">
-              <ProgressBar
-                label="Pakan"
-                percentage={settings.feedPercentage}
-                amountFormatted={formatRupiah(dailyAllocationCalc.feedAmount)}
-                color="bg-amber-500"
-              />
-              <ProgressBar
-                label="Pembelian Ayam"
-                percentage={settings.chickenPercentage}
-                amountFormatted={formatRupiah(dailyAllocationCalc.chickenAmount)}
-                color="bg-emerald-600"
-              />
-              <ProgressBar
-                label="Upah Kerja"
-                percentage={settings.laborPercentage}
-                amountFormatted={formatRupiah(dailyAllocationCalc.laborAmount)}
-                color="bg-sky-600"
-              />
-              <ProgressBar
-                label="Listrik"
-                percentage={settings.electricityPercentage}
-                amountFormatted={formatRupiah(dailyAllocationCalc.electricityAmount)}
-                color="bg-indigo-500"
-              />
-              <ProgressBar
-                label="Air"
-                percentage={settings.waterPercentage}
-                amountFormatted={formatRupiah(dailyAllocationCalc.waterAmount)}
-                color="bg-cyan-500"
-              />
-              <ProgressBar
-                label="Vitamin & Vaksin"
-                percentage={settings.vitaminPercentage}
-                amountFormatted={formatRupiah(dailyAllocationCalc.vitaminAmount)}
-                color="bg-rose-500"
-              />
-            </div>
-
-            {/* Direct Execute Button */}
-            <div className="pt-3 border-t border-neutral-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <p className="text-xs text-neutral-500">
-                Klik tombol untuk langsung menghitung dan mencatat pembagian modal hari ini ke dalam riwayat konversi.
-              </p>
-              <button
-                onClick={handleExecuteDailyConversion}
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-xs transition-colors shrink-0 whitespace-nowrap"
-              >
-                <Zap className="w-4 h-4 fill-white" />
-                <span>⚡ Konversi & Catatkan Laba Hari Ini Langsung</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="p-4 bg-white rounded-xl border border-neutral-200 text-xs text-neutral-500 flex items-center justify-between">
-            <span>Belum ada keuntungan bersih harian yang dapat dikonversi (Omzet belum melebihi pengeluaran).</span>
-            <button
-              onClick={() => onNavigate('sales')}
-              className="text-amber-700 font-semibold hover:underline"
-            >
-              Catat Penjualan Hari Ini →
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* 2. KARTU INPUT MANUAL / KUSTOM (Jika ingin mengkonversi nominal kustom) */}
-      <details className="bg-white rounded-2xl border border-neutral-200/90 shadow-2xs p-5 transition-all">
-        <summary className="text-sm font-bold text-neutral-900 cursor-pointer flex items-center justify-between list-none">
-          <div className="flex items-center gap-2">
-            <Coins className="w-4 h-4 text-neutral-500" />
-            <span>Konversi Nominal Kustom Manual (Opsional)</span>
-          </div>
-          <span className="text-xs text-amber-700 font-medium">Buka Form Kustom ↓</span>
-        </summary>
-
-        <div className="pt-6 border-t border-neutral-100 mt-4 space-y-6">
-          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-            <div className="flex-1 max-w-lg space-y-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-neutral-500">
-                Nominal Keuntungan yang Akan Dikonversi
-              </label>
-              <div className="relative">
-                <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-xl sm:text-2xl font-black text-neutral-400 font-mono">
-                  Rp
-                </span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={profitToConvert > 0 ? profitToConvert.toLocaleString('id-ID') : ''}
-                  onChange={(e) => {
-                    const raw = e.target.value.replace(/[^0-9]/g, '');
-                    setProfitToConvert(raw ? parseInt(raw, 10) : 0);
-                  }}
-                  className="w-full pl-14 pr-4 py-2.5 text-2xl font-black text-neutral-900 font-mono tabular-nums bg-neutral-50 border border-neutral-300 rounded-xl focus:outline-hidden focus:border-neutral-900"
-                  placeholder="10.000.000"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setProfitToConvert(10000000)}
-                className="px-3 py-1.5 text-xs font-medium text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-lg transition-colors"
-              >
-                Rp 10 Juta
-              </button>
-              <button
-                type="button"
-                onClick={() => setProfitToConvert(5000000)}
-                className="px-3 py-1.5 text-xs font-medium text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-lg transition-colors"
-              >
-                Rp 5 Juta
-              </button>
-              {monthProfitAmount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setProfitToConvert(monthProfitAmount)}
-                  className="px-3 py-1.5 text-xs font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200/80 rounded-lg transition-colors"
-                >
-                  Laba Bulan Ini ({formatRupiahCompact(monthProfitAmount)})
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <DateInput
-              label="Tanggal Konversi"
-              value={conversionDate}
-              onChange={(e) => setConversionDate(e.target.value)}
-            />
-            <TextareaInput
-              label="Keterangan / Catatan Alokasi"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Catatan periode konversi modal..."
-            />
-          </div>
-
-          <div className="flex justify-end pt-2">
-            <button
-              onClick={handleConvertAndSaveCustom}
-              className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-neutral-900 hover:bg-neutral-800 rounded-xl shadow-2xs transition-colors"
-            >
-              <Sparkles className="w-4 h-4" />
-              <span>Simpan Konversi Manual</span>
-            </button>
-          </div>
-        </div>
-      </details>
-
-      {/* 3. RIWAYAT KONVERSI MODAL (Tercatat langsung di sini) */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-base font-bold text-neutral-900">Riwayat Konversi Modal</h3>
-            <p className="text-xs text-neutral-500">
-              Histori alokasi modal operasional yang telah dicatat (termasuk konversi otomatis harian)
-            </p>
-          </div>
-          <span className="text-xs text-neutral-500 font-mono tabular-nums">{allocations.length} entri</span>
-        </div>
-
-        <DataTable
-          columns={columns}
-          data={allocations}
-          keyExtractor={(r) => r.id}
-          emptyMessage="Belum ada riwayat konversi modal."
-          actions={(r) => (
-            <>
-              <button
-                onClick={() => setDetailModalRecord(r)}
-                className="p-1.5 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 rounded-md transition-colors"
-                title="Lihat Rincian Lengkap"
-              >
-                <Eye className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setDeleteTargetId(r.id)}
-                className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
-                title="Hapus Riwayat"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </>
-          )}
-        />
-      </div>
-
-      {/* Modal Detail Konversi Lengkap */}
-      {detailModalRecord && (
-        <Modal
-          isOpen={true}
-          onClose={() => setDetailModalRecord(null)}
-          title={`Rincian Alokasi Modal - ${formatTanggal(detailModalRecord.date)}`}
-          maxWidth="md"
-        >
-          <div className="space-y-4">
-            <div className="p-4 bg-neutral-50 rounded-xl space-y-3 text-sm">
-              <div className="flex justify-between items-center pb-2 border-b border-neutral-200">
-                <span className="text-neutral-500">Tanggal Pencatatan:</span>
-                <span className="font-semibold text-neutral-900">{formatTanggal(detailModalRecord.date)}</span>
-              </div>
-              <div className="flex justify-between items-center text-base font-bold text-neutral-900 pb-2 border-b border-neutral-200">
-                <span>Keuntungan Dikonversi:</span>
-                <span className="font-mono tabular-nums text-amber-700">{formatRupiah(detailModalRecord.profit)}</span>
-              </div>
-
-              <div className="space-y-2 pt-1">
-                <div className="flex justify-between">
-                  <span className="text-neutral-600">Pakan ({detailModalRecord.feedPercentage}%):</span>
-                  <span className="font-mono tabular-nums font-semibold">{formatRupiah(detailModalRecord.feedAmount)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-neutral-600">Pembelian Ayam ({detailModalRecord.chickenPercentage}%):</span>
-                  <span className="font-mono tabular-nums font-semibold">{formatRupiah(detailModalRecord.chickenAmount)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-neutral-600">Upah Kerja ({detailModalRecord.laborPercentage}%):</span>
-                  <span className="font-mono tabular-nums font-semibold">{formatRupiah(detailModalRecord.laborAmount)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-neutral-600">Listrik ({detailModalRecord.electricityPercentage}%):</span>
-                  <span className="font-mono tabular-nums font-semibold">{formatRupiah(detailModalRecord.electricityAmount)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-neutral-600">Air ({detailModalRecord.waterPercentage}%):</span>
-                  <span className="font-mono tabular-nums font-semibold">{formatRupiah(detailModalRecord.waterAmount)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-neutral-600">Vitamin & Vaksin ({detailModalRecord.vitaminPercentage}%):</span>
-                  <span className="font-mono tabular-nums font-semibold">{formatRupiah(detailModalRecord.vitaminAmount)}</span>
-                </div>
-              </div>
-            </div>
-
-            {detailModalRecord.notes && (
-              <div className="p-3 bg-white border border-neutral-200 rounded-lg text-xs text-neutral-600">
-                <span className="font-semibold text-neutral-800 block mb-0.5">Catatan:</span>
-                {detailModalRecord.notes}
-              </div>
-            )}
-
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={() => setDetailModalRecord(null)}
-                className="px-4 py-2 text-sm font-medium text-neutral-700 bg-neutral-100 hover:bg-neutral-200/80 rounded-lg"
-              >
-                Tutup
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* Confirm Delete Dialog */}
-      <ConfirmDialog
-        isOpen={deleteTargetId !== null}
-        onClose={() => setDeleteTargetId(null)}
-        onConfirm={() => {
-          if (deleteTargetId) deleteAllocation(deleteTargetId);
+      {/* 1. KARTU UTAMA: AUTO CONVERSION ENGINE */}
+      <Card
+        elevation={0}
+        sx={{
+          borderRadius: '16px',
+          border: `2px solid ${alpha(theme.palette.primary.main, 0.4)}`,
+          backgroundColor: '#FFFFFF',
+          p: { xs: 2.5, sm: 3.5 },
+          boxShadow: '0 2px 10px -2px rgba(217, 119, 6, 0.08)',
         }}
-        title="Hapus Riwayat Konversi"
-        message="Apakah Anda yakin ingin menghapus catatan histori konversi modal ini? Tindakan ini tidak dapat dibatalkan."
-      />
-    </div>
+      >
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3, flexWrap: 'wrap', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                width: 42,
+                height: 42,
+                borderRadius: '12px',
+                backgroundColor: theme.palette.primary.main,
+                color: '#FFFFFF',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: `0 4px 10px ${alpha(theme.palette.primary.main, 0.3)}`,
+              }}
+            >
+              <FlashOnIcon />
+            </Box>
+            <Box>
+              <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                Konversi Otomatis Laba Harian
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Pilih tanggal transaksi untuk menghitung dan mengalokasikan laba secara otomatis
+              </Typography>
+            </Box>
+          </Box>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <TextField
+              type="date"
+              size="small"
+              label="Tanggal Transaksi"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              slotProps={{ inputLabel: { shrink: true } }}
+              sx={{ minWidth: 160 }}
+            />
+
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={autoDailyConversionEnabled}
+                  onChange={(e) => {
+                    setAutoDailyConversionEnabled(e.target.checked);
+                    showToast(
+                      'info',
+                      e.target.checked ? 'Auto-Sync Diaktifkan' : 'Auto-Sync Dinonaktifkan',
+                      'Sinkronisasi laba harian otomatis berjalan.'
+                    );
+                  }}
+                  color="primary"
+                />
+              }
+              label={
+                <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                  Auto-Sync
+                </Typography>
+              }
+            />
+          </Box>
+        </Box>
+
+        {/* 3 Metric Cards for Selected Date */}
+        <Grid container spacing={2} sx={{ mb: 3 }}>
+          <Grid size={{ xs: 12, sm: 4 }}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: 2,
+                borderRadius: '12px',
+                border: `1px solid ${theme.palette.divider}`,
+                backgroundColor: alpha(theme.palette.success.main, 0.04),
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                <PointOfSaleOutlinedIcon color="success" fontSize="small" />
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                  Omzet Penjualan
+                </Typography>
+              </Box>
+              <Typography variant="h5" sx={{ fontWeight: 800, color: theme.palette.text.primary }}>
+                {formatRupiah(selectedDateSales)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {formatTanggal(selectedDate)}
+              </Typography>
+            </Paper>
+          </Grid>
+
+          <Grid size={{ xs: 12, sm: 4 }}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: 2,
+                borderRadius: '12px',
+                border: `1px solid ${theme.palette.divider}`,
+                backgroundColor: alpha(theme.palette.error.main, 0.04),
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                <PaymentsOutlinedIcon color="error" fontSize="small" />
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                  Total Pengeluaran Biaya
+                </Typography>
+              </Box>
+              <Typography variant="h5" sx={{ fontWeight: 800, color: theme.palette.text.primary }}>
+                {formatRupiah(selectedDateExpenses)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {formatTanggal(selectedDate)}
+              </Typography>
+            </Paper>
+          </Grid>
+
+          <Grid size={{ xs: 12, sm: 4 }}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: 2,
+                borderRadius: '12px',
+                border: `1px solid ${theme.palette.divider}`,
+                backgroundColor: alpha(theme.palette.primary.main, 0.06),
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                <TrendingUpOutlinedIcon color="primary" fontSize="small" />
+                <Typography variant="caption" color="primary.dark" sx={{ fontWeight: 700 }}>
+                  Laba Bersih Siap Dikonversi
+                </Typography>
+              </Box>
+              <Typography variant="h5" sx={{ fontWeight: 800, color: theme.palette.primary.main }}>
+                {formatRupiah(selectedDateNetProfit)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {selectedDateNetProfit > 0 ? 'Siap dialokasikan ke 6 pos' : 'Tidak ada laba bersih'}
+              </Typography>
+            </Paper>
+          </Grid>
+        </Grid>
+
+        {/* Breakdown 6 Allocation Buckets */}
+        <Box sx={{ mb: 3 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5 }}>
+            Rincian Pembagian Pos Modal ({formatTanggal(selectedDate)}):
+          </Typography>
+
+          <Grid container spacing={1.5}>
+            {allocationBuckets.map((bucket, idx) => (
+              <Grid size={{ xs: 12, sm: 6, md: 4 }} key={idx}>
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 1.5,
+                    borderRadius: '10px',
+                    border: `1px solid ${theme.palette.divider}`,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <span>{bucket.icon}</span>
+                      <span>{bucket.label}</span>
+                    </Typography>
+                    <Chip label={`${bucket.pct}%`} size="small" sx={{ fontWeight: 700, height: 20, fontSize: '0.7rem' }} />
+                  </Box>
+                  <Typography variant="h6" sx={{ fontWeight: 800, color: bucket.color }}>
+                    {formatRupiah(bucket.amount)}
+                  </Typography>
+                </Paper>
+              </Grid>
+            ))}
+          </Grid>
+        </Box>
+
+        {/* Action Button */}
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2, pt: 1, borderTop: `1px solid ${theme.palette.divider}` }}>
+          <Typography variant="caption" color="text.secondary">
+            *Konversi akan langsung mencatat 6 pos modal ke database Supabase dan mengurangi saldo keuntungan.
+          </Typography>
+
+          <Button
+            variant="contained"
+            color="primary"
+            size="large"
+            disabled={selectedDateNetProfit <= 0}
+            onClick={handleExecuteAutoConversion}
+            startIcon={<AutorenewOutlinedIcon />}
+            sx={{ fontWeight: 700, px: 3.5, py: 1.25 }}
+          >
+            Konversi Laba Tanggal Ini ({formatRupiah(selectedDateNetProfit)})
+          </Button>
+        </Box>
+      </Card>
+
+      {/* 2. KARTU KONVERSI KUSTOM / SIMULASI */}
+      <Card elevation={0} sx={{ borderRadius: '16px', border: `1px solid ${theme.palette.divider}`, p: { xs: 2.5, sm: 3 } }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: 0.5 }}>
+          Simulasi & Konversi Modal Kustom
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
+          Gunakan simulasi ini untuk mengonversi modal dengan nominal keuntungan kustom di luar transaksi harian.
+        </Typography>
+
+        <Grid container spacing={2.5} sx={{ mb: 2.5 }}>
+          <Grid size={{ xs: 12, sm: 4 }}>
+            <TextField
+              fullWidth
+              label="Nominal Keuntungan (Rp)"
+              type="number"
+              size="small"
+              value={customProfitInput}
+              onChange={(e) => setCustomProfitInput(Math.max(0, Number(e.target.value) || 0))}
+            />
+          </Grid>
+
+          <Grid size={{ xs: 12, sm: 4 }}>
+            <TextField
+              fullWidth
+              type="date"
+              label="Tanggal Konversi"
+              size="small"
+              value={customDate}
+              onChange={(e) => setCustomDate(e.target.value)}
+              slotProps={{ inputLabel: { shrink: true } }}
+            />
+          </Grid>
+
+          <Grid size={{ xs: 12, sm: 4 }}>
+            <TextField
+              fullWidth
+              label="Catatan Alokasi"
+              size="small"
+              value={customNotes}
+              onChange={(e) => setCustomNotes(e.target.value)}
+            />
+          </Grid>
+        </Grid>
+
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={handleSaveCustomConversion}
+            startIcon={<CalculateOutlinedIcon />}
+            sx={{ fontWeight: 700 }}
+          >
+            Simpan Konversi Kustom ({formatRupiah(customProfitInput)})
+          </Button>
+        </Box>
+      </Card>
+
+      {/* 3. TABEL RIWAYAT KONVERSI MODAL */}
+      <Card elevation={0} sx={{ borderRadius: '16px', border: `1px solid ${theme.palette.divider}`, overflow: 'hidden' }}>
+        <Box sx={{ p: { xs: 2, sm: 2.5 }, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1.5, borderBottom: `1px solid ${theme.palette.divider}` }}>
+          <Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+              Riwayat Konversi Modal ({allocations.length} Transaksi)
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Daftar seluruh alokasi modal operasional yang tersimpan di Supabase
+            </Typography>
+          </Box>
+
+          <Button
+            variant="outlined"
+            size="small"
+            onClick={handleExportCSV}
+            startIcon={<FileDownloadOutlinedIcon />}
+          >
+            Export CSV
+          </Button>
+        </Box>
+
+        <TableContainer>
+          <Table sx={{ minWidth: 700 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>Tanggal</TableCell>
+                <TableCell align="right">Laba Dikonversi</TableCell>
+                <TableCell align="right">Pakan (63%)</TableCell>
+                <TableCell align="right">Ayam (20%)</TableCell>
+                <TableCell align="right">Upah (12%)</TableCell>
+                <TableCell align="right">Listrik / Air / Vit</TableCell>
+                <TableCell align="center">Aksi</TableCell>
+              </TableRow>
+            </TableHead>
+
+            <TableBody>
+              {paginatedAllocations.map((row) => (
+                <TableRow key={row.id} hover>
+                  <TableCell>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      {formatTanggal(row.date)}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {row.notes || '-'}
+                    </Typography>
+                  </TableCell>
+                  <TableCell align="right">
+                    <Typography variant="body2" sx={{ fontWeight: 800, color: theme.palette.primary.main }}>
+                      {formatRupiah(row.profit)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell align="right">{formatRupiah(row.feedAmount)}</TableCell>
+                  <TableCell align="right">{formatRupiah(row.chickenAmount)}</TableCell>
+                  <TableCell align="right">{formatRupiah(row.laborAmount)}</TableCell>
+                  <TableCell align="right">
+                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 600 }}>
+                      Listrik: {formatRupiah(row.electricityAmount)}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Air: {formatRupiah(row.waterAmount)} | Vit: {formatRupiah(row.vitaminAmount)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell align="center">
+                    <Tooltip title="Detail Rincian" arrow>
+                      <IconButton size="small" onClick={() => setDetailModalRecord(row)}>
+                        <VisibilityOutlinedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Hapus Alokasi" arrow>
+                      <IconButton size="small" color="error" onClick={() => setDeleteTargetId(row.id)}>
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </TableCell>
+                </TableRow>
+              ))}
+
+              {allocations.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      Belum ada riwayat konversi modal. Klik tombol konversi di atas untuk memulai.
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+
+        {allocations.length > 0 && (
+          <TablePagination
+            component="div"
+            count={allocations.length}
+            page={page}
+            onPageChange={(_e, newPage) => setPage(newPage)}
+            rowsPerPage={rowsPerPage}
+            onRowsPerPageChange={(e) => {
+              setRowsPerPage(parseInt(e.target.value, 10));
+              setPage(0);
+            }}
+            labelRowsPerPage="Baris:"
+            labelDisplayedRows={({ from, to, count }) => `${from}-${to} dari ${count}`}
+            rowsPerPageOptions={[5, 10, 25]}
+          />
+        )}
+      </Card>
+
+      {/* Detail Dialog */}
+      <Dialog
+        open={Boolean(detailModalRecord)}
+        onClose={() => setDetailModalRecord(null)}
+        maxWidth="sm"
+        fullWidth
+        slotProps={{ paper: { sx: { borderRadius: '16px', p: 1 } } }}
+      >
+        <DialogTitle sx={{ fontWeight: 800 }}>
+          Rincian Konversi Modal
+        </DialogTitle>
+        <DialogContent>
+          {detailModalRecord && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', p: 1.5, bgcolor: alpha(theme.palette.primary.main, 0.06), borderRadius: '10px' }}>
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>Total Laba Bersih Dikonversi</Typography>
+                <Typography variant="subtitle1" sx={{ fontWeight: 800, color: theme.palette.primary.main }}>
+                  {formatRupiah(detailModalRecord.profit)}
+                </Typography>
+              </Box>
+
+              <Typography variant="caption" color="text.secondary">
+                Tanggal: <strong>{formatTanggal(detailModalRecord.date)}</strong> | Catatan: <strong>{detailModalRecord.notes || '-'}</strong>
+              </Typography>
+
+              <Divider />
+
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2">🌽 Pakan (63%)</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatRupiah(detailModalRecord.feedAmount)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2">🐔 Pembelian Ayam (20%)</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatRupiah(detailModalRecord.chickenAmount)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2">💼 Upah Tenaga Kerja (12%)</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatRupiah(detailModalRecord.laborAmount)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2">⚡ Listrik (0.5%)</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatRupiah(detailModalRecord.electricityAmount)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2">💧 Air (1.0%)</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatRupiah(detailModalRecord.waterAmount)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2">💊 Vitamin & Vaksin (3.5%)</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatRupiah(detailModalRecord.vitaminAmount)}</Typography>
+                </Box>
+              </Box>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button variant="contained" onClick={() => setDetailModalRecord(null)}>
+            Tutup
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={Boolean(deleteTargetId)}
+        onClose={() => setDeleteTargetId(null)}
+        slotProps={{ paper: { sx: { borderRadius: '12px' } } }}
+      >
+        <DialogTitle sx={{ fontWeight: 700 }}>Hapus Riwayat Konversi?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Apakah Anda yakin ingin menghapus data konversi modal ini dari database?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setDeleteTargetId(null)}>Batal</Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={async () => {
+              if (deleteTargetId) {
+                await deleteAllocation(deleteTargetId);
+                setDeleteTargetId(null);
+              }
+            }}
+          >
+            Hapus
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
   );
 };

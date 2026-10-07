@@ -236,8 +236,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   variant="contained"
                   color="primary"
                   fullWidth
-                  onClick={() => {
-                    const res = convertDailyProfitToCapital();
+                  onClick={async () => {
+                    const res = await convertDailyProfitToCapital();
                     if (res.success) {
                       confetti({ particleCount: 70, spread: 60, origin: { y: 0.6 } });
                     }

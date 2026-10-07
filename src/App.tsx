@@ -12,6 +12,9 @@ import { TopBar } from './components/navigation/TopBar';
 import { MobileDrawer } from './components/navigation/MobileDrawer';
 import { NavTab, TAB_TITLES } from './components/navigation/navConfig';
 import { ToastContainer } from './components/common/Toast';
+import { AuthDialog } from './components/auth/AuthDialog';
+import { useApp } from './context/AppContext';
+import { LinearProgress } from '@mui/material';
 
 // Pages
 import { DashboardPage } from './components/pages/DashboardPage';
@@ -28,6 +31,7 @@ import { SettingsPage } from './components/pages/SettingsPage';
 function MainAppContent() {
   const muiTheme = useTheme();
   const isMobile = useMediaQuery(muiTheme.breakpoints.down('md'));
+  const { isAuthDialogOpen, setIsAuthDialogOpen, dbLoading } = useApp();
 
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
@@ -94,6 +98,8 @@ function MainAppContent() {
           onToggleSidebarCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
           isMobile={isMobile}
         />
+
+        {dbLoading && <LinearProgress color="primary" sx={{ height: 2.5 }} />}
 
         {/* Content Container */}
         <Box
@@ -171,6 +177,9 @@ function MainAppContent() {
 
       {/* Global MUI Toast Notifications */}
       <ToastContainer />
+
+      {/* Supabase Auth Modal */}
+      <AuthDialog open={isAuthDialogOpen} onClose={() => setIsAuthDialogOpen(false)} />
     </Box>
   );
 }

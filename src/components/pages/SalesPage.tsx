@@ -6,7 +6,8 @@ import { Modal } from '../common/Modal';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { FormInput, DateInput, SelectInput, CurrencyInput, TextareaInput } from '../common/FormInputs';
 import { formatTanggal, formatAngka, formatRupiah, getTodayDateString } from '../../utils/formatters';
-import { ShoppingBag, Plus, Edit2, Trash2, Eye, AlertCircle, CheckCircle, Clock, Boxes, AlertTriangle } from 'lucide-react';
+import { exportToCsv, formatCsvDate, CsvColumn } from '../../utils/csvExport';
+import { ShoppingBag, Plus, Edit2, Trash2, Eye, AlertCircle, CheckCircle, Clock, Boxes, AlertTriangle, Download } from 'lucide-react';
 
 interface SalesPageProps {
   isAddModalOpen?: boolean;
@@ -83,7 +84,7 @@ export const SalesPage: React.FC<SalesPageProps> = ({
     setInternalModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -111,13 +112,13 @@ export const SalesPage: React.FC<SalesPageProps> = ({
     };
 
     if (editingRecord) {
-      const res = updateSale(editingRecord.id, payload);
+      const res = await updateSale(editingRecord.id, payload);
       if (!res.success) {
         setFormError(res.error || 'Gagal memperbarui penjualan');
         return;
       }
     } else {
-      const res = addSale(payload);
+      const res = await addSale(payload);
       if (!res.success) {
         setFormError(res.error || 'Gagal mencatat penjualan');
         return;

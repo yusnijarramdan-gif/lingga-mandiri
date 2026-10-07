@@ -37,6 +37,7 @@ import TrendingUpOutlinedIcon from '@mui/icons-material/TrendingUpOutlined';
 import { useApp } from '../../context/AppContext';
 import { formatRupiah, formatAngka, formatTanggal, getTodayDateString } from '../../utils/formatters';
 import { isWithinDateRange } from '../../utils/calculations';
+import { exportToCsv, formatCsvDate, CsvColumn } from '../../utils/csvExport';
 
 type ReportSubMenu = 'produksi' | 'penjualan' | 'biaya' | 'modal';
 
@@ -126,7 +127,6 @@ export const ReportsPage: React.FC = () => {
 
   // CSV Export yang sepenuhnya menyesuaikan dengan struktur tabel aktif
   const handleExportCSV = () => {
-    let csvRows: string[] = [];
     const periodeStr =
       filterType === 'today'
         ? formatTanggal(getTodayDateString())
@@ -136,73 +136,183 @@ export const ReportsPage: React.FC = () => {
         ? '7 Hari Terakhir'
         : `${formatTanggal(customStart)} s/d ${formatTanggal(customEnd)}`;
 
-    // Header Dokumen
-    csvRows.push(`"${farm.name.toUpperCase()} - ${subMenuLabels[activeSubMenu].toUpperCase()}"`);
-    csvRows.push(`"Pemilik: ${farm.ownerName}"`);
-    csvRows.push(`"Lokasi: ${farm.location}"`);
-    csvRows.push(`"Periode Laporan: ${periodeStr}"`);
-    csvRows.push(`"Tanggal Unduh: ${formatTanggal(getTodayDateString())}"`);
-    csvRows.push(''); // Baris kosong
+    const fileDateSuffix =
+      filterType === 'today'
+        ? getTodayDateString()
+        : filterType === 'custom'
+        ? `${customStart}_sampai_${customEnd}`
+        : getTodayDateString();
+
+    const baseFilename = `telurku_${activeSubMenu}_${fileDateSuffix}`;
+
+    const metadata: Record<string, string | number> = {
+      'Peternakan': farm.name,
+      'Pemilik': farm.ownerName,
+      'Lokasi': farm.location,
+      'Jenis Laporan': subMenuLabels[activeSubMenu],
+      'Periode Filter': periodeStr,
+      'Tanggal Ekspor': formatTanggal(getTodayDateString()),
+    };
 
     if (activeSubMenu === 'produksi') {
-      // 1. Kolom persis sesuai Tabel Produksi
-      csvRows.push('No,Tanggal Panen,Ayam Produktif (Ekor),Berat Panen (KG),Retak / Reject (KG),Produktivitas Harian (%),Catatan');
-      filteredHarvests.forEach((h, i) => {
-        const prodRatio = h.productiveChickens > 0 ? ((h.totalWeight * 16) / h.productiveChickens) * 100 : 0;
-        csvRows.push(
-          `${i + 1},"${formatTanggal(h.date)}",${h.productiveChickens},${h.totalWeight},${h.brokenWeight || 0},"${prodRatio.toFixed(1)}%","${h.notes || '-'}"`
-        );
+      const columns: CsvColumn<any>[] = [
+        { key: 'no', label: 'No', format: (_v, _r, idx) => idx + 1 },
+        { key: 'date', label: 'Tanggal Panen', format: (v) => formatCsvDate(v) },
+        { key: 'productiveChickens', label: 'Ayam Produktif (Ekor)', format: (v) => Number(v) || 0 },
+        { key: 'totalWeight', label: 'Berat Panen (KG)', format: (v) => Number(v) || 0 },
+        { key: 'brokenWeight', label: 'Retak / Reject (KG)', format: (v) => Number(v) || 0 },
+        {
+          key: 'productivity',
+          label: 'Produktivitas Harian (%)',
+          format: (_v, r) => {
+            const prod = r.productiveChickens > 0 ? ((r.totalWeight * 16) / r.productiveChickens) * 100 : 0;
+            return `${prod.toFixed(1)}%`;
+          },
+        },
+        { key: 'notes', label: 'Catatan', format: (v) => v || '-' },
+      ];
+
+      const summaryRow = {
+        no: 'TOTAL',
+        date: `${filteredHarvests.length} Hari Panen`,
+        productiveChickens: `${activeProductiveChickens} Ekor (Stok Aktif)`,
+        totalWeight: totalPanenKg,
+        brokenWeight: totalRusakKg,
+        productivity: `Rata-rata ${rataRataPanenKg.toFixed(1)} KG/hari`,
+        notes: `${filteredHarvests.length} Catatan Panen`,
+      };
+
+      exportToCsv({
+        filename: baseFilename,
+        title: `${farm.name.toUpperCase()} - LAPORAN PRODUKSI TELUR`,
+        metadata,
+        columns,
+        data: filteredHarvests,
+        summaryRow,
+        onSuccess: (fn, count) => {
+          showToast('success', 'Eksport CSV Berhasil', `File ${fn} (${count} baris) berhasil diunduh.`);
+        },
+        onError: (err) => {
+          showToast('error', 'Gagal Ekspor CSV', err);
+        },
       });
-      // Baris Total Tabel Produksi
-      csvRows.push('');
-      csvRows.push(`"TOTAL / RINGKASAN",,"${activeProductiveChickens} Ekor (Stok Aktif)",${totalPanenKg} KG,${totalRusakKg} KG,"Rata-rata: ${rataRataPanenKg.toFixed(1)} KG/hari","${filteredHarvests.length} Hari Panen Tercatat"`);
 
     } else if (activeSubMenu === 'penjualan') {
-      // 2. Kolom persis sesuai Tabel Penjualan
-      csvRows.push('No,Tanggal,Jumlah (KG),Harga Satuan (Rp),Total Nilai (Rp),Status Pembayaran,Catatan');
-      filteredSales.forEach((s, i) => {
-        csvRows.push(
-          `${i + 1},"${formatTanggal(s.date)}",${s.quantity},${s.unitPrice},${s.total},"${s.paymentStatus}","${s.notes || '-'}"`
-        );
+      const columns: CsvColumn<any>[] = [
+        { key: 'no', label: 'No', format: (_v, _r, idx) => idx + 1 },
+        { key: 'date', label: 'Tanggal Penjualan', format: (v) => formatCsvDate(v) },
+        { key: 'customer', label: 'Pelanggan / Pembeli', format: (v) => v || 'Umum / Tunai' },
+        { key: 'quantity', label: 'Jumlah Telur (KG)', format: (v) => Number(v) || 0 },
+        { key: 'unitPrice', label: 'Harga Satuan (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'total', label: 'Total Penjualan (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'paymentStatus', label: 'Status Pembayaran', format: (v) => v || 'Lunas' },
+        { key: 'notes', label: 'Catatan', format: (v) => v || '-' },
+      ];
+
+      const summaryRow = {
+        no: 'TOTAL',
+        date: `${filteredSales.length} Transaksi`,
+        customer: '-',
+        quantity: totalTelurTerjualKg,
+        unitPrice: '-',
+        total: totalOmzet,
+        paymentStatus: `Lunas: ${totalPenjualanLunas} | Piutang: ${totalPiutang}`,
+        notes: `${filteredSales.length} Transaksi Selesai`,
+      };
+
+      exportToCsv({
+        filename: baseFilename,
+        title: `${farm.name.toUpperCase()} - LAPORAN PENJUALAN TELUR`,
+        metadata,
+        columns,
+        data: filteredSales,
+        summaryRow,
+        onSuccess: (fn, count) => {
+          showToast('success', 'Eksport CSV Berhasil', `File ${fn} (${count} transaksi) berhasil diunduh.`);
+        },
+        onError: (err) => {
+          showToast('error', 'Gagal Ekspor CSV', err);
+        },
       });
-      // Baris Total Tabel Penjualan
-      csvRows.push('');
-      csvRows.push(`"TOTAL PENJUALAN",,${totalTelurTerjualKg} KG,-,${totalOmzet},"Lunas: ${totalPenjualanLunas} | Piutang: ${totalPiutang}","${filteredSales.length} Transaksi Berhasil"`);
 
     } else if (activeSubMenu === 'biaya') {
-      // 3. Kolom persis sesuai Tabel Biaya Operasional
-      csvRows.push('No,Tanggal,Kategori Pos,Keterangan Biaya,Nominal (Rp),Catatan');
-      filteredExpenses.forEach((e, i) => {
-        csvRows.push(
-          `${i + 1},"${formatTanggal(e.date)}","${e.category}","${e.description.replace(/"/g, '""')}",${e.amount},"${(e.notes || '-').replace(/"/g, '""')}"`
-        );
+      const columns: CsvColumn<any>[] = [
+        { key: 'no', label: 'No', format: (_v, _r, idx) => idx + 1 },
+        { key: 'date', label: 'Tanggal Pengeluaran', format: (v) => formatCsvDate(v) },
+        { key: 'category', label: 'Kategori Biaya', format: (v) => v || '-' },
+        { key: 'description', label: 'Keterangan Pengeluaran', format: (v) => v || '-' },
+        { key: 'amount', label: 'Nominal Biaya (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'notes', label: 'Catatan', format: (v) => v || '-' },
+      ];
+
+      const summaryRow = {
+        no: 'TOTAL',
+        date: `${filteredExpenses.length} Pos Biaya`,
+        category: '-',
+        description: 'Total Biaya Operasional',
+        amount: totalPengeluaran,
+        notes: `${filteredExpenses.length} Transaksi Pengeluaran`,
+      };
+
+      exportToCsv({
+        filename: baseFilename,
+        title: `${farm.name.toUpperCase()} - LAPORAN BIAYA OPERASIONAL`,
+        metadata,
+        columns,
+        data: filteredExpenses,
+        summaryRow,
+        onSuccess: (fn, count) => {
+          showToast('success', 'Eksport CSV Berhasil', `File ${fn} (${count} pos biaya) berhasil diunduh.`);
+        },
+        onError: (err) => {
+          showToast('error', 'Gagal Ekspor CSV', err);
+        },
       });
-      // Baris Total Tabel Biaya
-      csvRows.push('');
-      csvRows.push(`"TOTAL BIAYA OPERASIONAL",,,,"${totalPengeluaran}","${filteredExpenses.length} Pos Pengeluaran"`);
 
     } else {
-      // 4. Kolom persis sesuai Tabel Modal Operasional
-      csvRows.push('No,Tanggal,Laba Dikonversi (Rp),Pakan (63%) (Rp),Ayam (20%) (Rp),Upah (12%) (Rp),Listrik (0.5%) (Rp),Air (1%) (Rp),Vitamin (3.5%) (Rp),Total Alokasi (Rp)');
-      filteredAllocations.forEach((a, i) => {
-        csvRows.push(
-          `${i + 1},"${formatTanggal(a.date)}",${a.profit},${a.feedAmount},${a.chickenAmount},${a.laborAmount},${a.electricityAmount},${a.waterAmount},${a.vitaminAmount},${a.profit}`
-        );
+      const columns: CsvColumn<any>[] = [
+        { key: 'no', label: 'No', format: (_v, _r, idx) => idx + 1 },
+        { key: 'date', label: 'Tanggal Alokasi', format: (v) => formatCsvDate(v) },
+        { key: 'profit', label: 'Laba Dikonversi (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'feedAmount', label: 'Pakan (63%) (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'chickenAmount', label: 'Ayam (20%) (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'laborAmount', label: 'Upah (12%) (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'electricityAmount', label: 'Listrik (0.5%) (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'waterAmount', label: 'Air (1.0%) (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'vitaminAmount', label: 'Vitamin & Vaksin (3.5%) (Rp)', format: (v) => Number(v) || 0 },
+        { key: 'total', label: 'Total Alokasi (Rp)', format: (_v, r) => Number(r.profit) || 0 },
+        { key: 'notes', label: 'Catatan', format: (v) => v || '-' },
+      ];
+
+      const summaryRow = {
+        no: 'TOTAL',
+        date: `${filteredAllocations.length} Alokasi`,
+        profit: totalSeluruhAlokasi,
+        feedAmount: totalAlokasiPakan,
+        chickenAmount: totalAlokasiAyam,
+        laborAmount: totalAlokasiUpah,
+        electricityAmount: totalAlokasiListrik,
+        waterAmount: totalAlokasiAir,
+        vitaminAmount: totalAlokasiVitamin,
+        total: totalSeluruhAlokasi,
+        notes: `${filteredAllocations.length} Konversi Modal Selesai`,
+      };
+
+      exportToCsv({
+        filename: baseFilename,
+        title: `${farm.name.toUpperCase()} - LAPORAN MODAL OPERASIONAL`,
+        metadata,
+        columns,
+        data: filteredAllocations,
+        summaryRow,
+        onSuccess: (fn, count) => {
+          showToast('success', 'Eksport CSV Berhasil', `File ${fn} (${count} data alokasi) berhasil diunduh.`);
+        },
+        onError: (err) => {
+          showToast('error', 'Gagal Ekspor CSV', err);
+        },
       });
-      // Baris Total Tabel Modal
-      csvRows.push('');
-      csvRows.push(`"TOTAL ALOKASI MODAL",,"${totalSeluruhAlokasi}","${totalAlokasiPakan}","${totalAlokasiAyam}","${totalAlokasiUpah}","${totalAlokasiListrik}","${totalAlokasiAir}","${totalAlokasiVitamin}","${totalSeluruhAlokasi}"`);
     }
-
-    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csvRows.join('\n'));
-    const link = document.createElement('a');
-    link.setAttribute('href', csvContent);
-    link.setAttribute('download', `${farm.name.toLowerCase().replace(/\s+/g, '-')}-${activeSubMenu}-${getTodayDateString()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    showToast('success', 'Eksport Tabel Berhasil', `File CSV ${subMenuLabels[activeSubMenu]} berhasil diunduh sesuai struktur tabel.`);
   };
 
   const handlePrint = () => {

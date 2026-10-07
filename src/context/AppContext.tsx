@@ -1,4 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import { User } from '@supabase/supabase-js';
+import { supabase, checkSupabaseConnection } from '../lib/supabase';
 import {
   ChickenRecord,
   HarvestRecord,
@@ -10,6 +12,7 @@ import {
   StockMovement,
   ToastMessage,
   ToastType,
+  UserProfile,
 } from '../types';
 import {
   INITIAL_FARM,
@@ -22,39 +25,59 @@ import {
 } from '../utils/mockData';
 import { DEFAULT_ALLOCATION_SETTINGS, calculateProfitAllocation } from '../utils/calculations';
 import { formatTanggal } from '../utils/formatters';
+import * as db from '../services/supabaseService';
 
-interface AppContextType {
+export interface AppContextType {
+  // Auth State
+  user: User | null;
+  userProfile: UserProfile | null;
+  authLoading: boolean;
+  isAuthDialogOpen: boolean;
+  setIsAuthDialogOpen: (open: boolean) => void;
+  signOut: () => Promise<void>;
+
+  // Database Loading & Refresh
+  dbLoading: boolean;
+  refreshDatabaseData: () => Promise<void>;
+
+  // Farm
   farm: FarmProfile;
   setFarm: React.Dispatch<React.SetStateAction<FarmProfile>>;
-  updateFarmProfile: (data: Partial<FarmProfile>) => void;
+  updateFarmProfile: (data: Partial<FarmProfile>) => Promise<void>;
 
+  // Chickens
   chickens: ChickenRecord[];
-  addChicken: (record: Omit<ChickenRecord, 'id' | 'farmId' | 'createdAt'>) => void;
-  updateChicken: (id: string, record: Partial<ChickenRecord>) => void;
-  deleteChicken: (id: string) => void;
+  addChicken: (record: Omit<ChickenRecord, 'id' | 'farmId' | 'createdAt'>) => Promise<void>;
+  updateChicken: (id: string, record: Partial<ChickenRecord>) => Promise<void>;
+  deleteChicken: (id: string) => Promise<void>;
 
+  // Harvests
   harvests: HarvestRecord[];
-  addHarvest: (record: Omit<HarvestRecord, 'id' | 'farmId' | 'createdAt'>) => void;
-  updateHarvest: (id: string, record: Partial<HarvestRecord>) => void;
-  deleteHarvest: (id: string) => void;
+  addHarvest: (record: Omit<HarvestRecord, 'id' | 'farmId' | 'createdAt'>) => Promise<void>;
+  updateHarvest: (id: string, record: Partial<HarvestRecord>) => Promise<void>;
+  deleteHarvest: (id: string) => Promise<void>;
 
+  // Sales
   sales: SaleRecord[];
-  addSale: (record: Omit<SaleRecord, 'id' | 'farmId' | 'createdAt'>) => { success: boolean; error?: string };
-  updateSale: (id: string, record: Partial<SaleRecord>) => { success: boolean; error?: string };
-  deleteSale: (id: string) => void;
+  addSale: (record: Omit<SaleRecord, 'id' | 'farmId' | 'createdAt'>) => Promise<{ success: boolean; error?: string }>;
+  updateSale: (id: string, record: Partial<SaleRecord>) => Promise<{ success: boolean; error?: string }>;
+  deleteSale: (id: string) => Promise<void>;
 
+  // Expenses
   expenses: ExpenseRecord[];
-  addExpense: (record: Omit<ExpenseRecord, 'id' | 'farmId' | 'createdAt'>) => void;
-  updateExpense: (id: string, record: Partial<ExpenseRecord>) => void;
-  deleteExpense: (id: string) => void;
+  addExpense: (record: Omit<ExpenseRecord, 'id' | 'farmId' | 'createdAt'>) => Promise<void>;
+  updateExpense: (id: string, record: Partial<ExpenseRecord>) => Promise<void>;
+  deleteExpense: (id: string) => Promise<void>;
 
+  // Profit Allocations
   allocations: ProfitAllocation[];
-  addAllocation: (record: Omit<ProfitAllocation, 'id' | 'farmId' | 'createdAt'>) => void;
-  deleteAllocation: (id: string) => void;
+  addAllocation: (record: Omit<ProfitAllocation, 'id' | 'farmId' | 'createdAt'>) => Promise<void>;
+  deleteAllocation: (id: string) => Promise<void>;
 
+  // Settings
   settings: AllocationSettings;
-  updateSettings: (newSettings: AllocationSettings) => void;
-  resetSettingsToDefault: () => void;
+  updateSettings: (newSettings: AllocationSettings) => Promise<void>;
+  resetSettingsToDefault: () => Promise<void>;
 
   // Real-time stock computations
   currentStock: number;
@@ -68,7 +91,7 @@ interface AppContextType {
   todayExpensesAmount: number;
   todayProfitAmount: number;
   todayActiveDateStr: string;
-  convertDailyProfitToCapital: (targetDate?: string) => { success: boolean; message: string; allocation?: ProfitAllocation };
+  convertDailyProfitToCapital: (targetDate?: string) => Promise<{ success: boolean; message: string; allocation?: ProfitAllocation }>;
   autoDailyConversionEnabled: boolean;
   setAutoDailyConversionEnabled: (enabled: boolean) => void;
   monthExpensesAmount: number;
@@ -85,7 +108,7 @@ interface AppContextType {
   // Reset to demo data
   resetAllToDemoData: () => void;
 
-  // Supabase status simulation
+  // Supabase status & config
   supabaseConfig: { url: string; anonKey: string };
   saveSupabaseConfig: (url: string, key: string) => void;
   syncStatus: 'local' | 'synced' | 'connecting';
@@ -123,6 +146,14 @@ function saveStorage<T>(key: string, data: T) {
 }
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // Auth state
+  const [user, setUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [isAuthDialogOpen, setIsAuthDialogOpen] = useState<boolean>(false);
+  const [dbLoading, setDbLoading] = useState<boolean>(false);
+
+  // Core Farm Entities (Initialized from local cache, then updated via Supabase)
   const [farm, setFarm] = useState<FarmProfile>(() => {
     const stored = loadStorage(STORAGE_KEYS.FARM, INITIAL_FARM);
     if (!stored.name || stored.name === 'Peternakan Telur Berkah Abadi') {
@@ -148,16 +179,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [supabaseConfig, setSupabaseConfig] = useState<{ url: string; anonKey: string }>(() =>
-    loadStorage(STORAGE_KEYS.SUPABASE, { url: '', anonKey: '' })
-  );
-  const [syncStatus, setSyncStatus] = useState<'local' | 'synced' | 'connecting'>('local');
-
+  const [supabaseConfig, setSupabaseConfig] = useState<{ url: string; anonKey: string }>(() => {
+    const stored = loadStorage(STORAGE_KEYS.SUPABASE, { url: '', anonKey: '' });
+    return {
+      url: stored.url || import.meta.env.VITE_SUPABASE_URL || 'https://anggsdesivvelfaawsah.supabase.co',
+      anonKey: stored.anonKey || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_cHTb-Af7H-0oyZ-tRly8LA_KvSNXQ0K',
+    };
+  });
+  const [syncStatus, setSyncStatus] = useState<'local' | 'synced' | 'connecting'>('synced');
   const [autoDailyConversionEnabled, setAutoDailyConversionEnabled] = useState<boolean>(() =>
     loadStorage('telurku_auto_conversion_v2', false)
   );
 
-  // Sync to localStorage
+  // Sync to localStorage as offline cache
   useEffect(() => saveStorage(STORAGE_KEYS.FARM, farm), [farm]);
   useEffect(() => saveStorage(STORAGE_KEYS.SETTINGS, settings), [settings]);
   useEffect(() => saveStorage(STORAGE_KEYS.CHICKENS, chickens), [chickens]);
@@ -168,27 +202,144 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => saveStorage(STORAGE_KEYS.SUPABASE, supabaseConfig), [supabaseConfig]);
   useEffect(() => saveStorage('telurku_auto_conversion_v2', autoDailyConversionEnabled), [autoDailyConversionEnabled]);
 
-  const showToast = (type: ToastType, title: string, message?: string) => {
+  const showToast = useCallback((type: ToastType, title: string, message?: string) => {
     const id = Date.now().toString() + Math.random().toString().slice(2, 6);
     setToasts((prev) => [...prev, { id, type, title, message }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4500);
-  };
+  }, []);
 
-  const removeToast = (id: string) => {
+  const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
+  }, []);
 
-  const updateFarmProfile = (data: Partial<FarmProfile>) => {
-    setFarm((prev) => {
-      const updated = { ...prev, ...data };
-      return updated;
+  // Fetch all database records from Supabase
+  const refreshDatabaseData = useCallback(async () => {
+    setDbLoading(true);
+    try {
+      // 1. Fetch Farm
+      const currentFarm = await db.fetchFarm(user?.id);
+      if (currentFarm) {
+        setFarm(currentFarm);
+        const farmId = currentFarm.id;
+
+        // 2. Fetch parallel modules
+        const [chickensData, harvestsData, salesData, expensesData, allocationsData, settingsData] =
+          await Promise.all([
+            db.fetchChickens(farmId),
+            db.fetchHarvests(farmId),
+            db.fetchSales(farmId),
+            db.fetchExpenses(farmId),
+            db.fetchAllocations(farmId),
+            db.fetchAllocationSettings(farmId),
+          ]);
+
+        if (chickensData && chickensData.length > 0) setChickens(chickensData);
+        if (harvestsData && harvestsData.length > 0) setHarvests(harvestsData);
+        if (salesData && salesData.length > 0) setSales(salesData);
+        if (expensesData && expensesData.length > 0) setExpenses(expensesData);
+        if (allocationsData && allocationsData.length > 0) setAllocations(allocationsData);
+        if (settingsData) setSettings(settingsData);
+        setSyncStatus('synced');
+      } else if (user?.id) {
+        // Only attempt creating farm if user is authenticated
+        const result = await db.createFarm(INITIAL_FARM, user.id);
+        if (result.farm) {
+          setFarm(result.farm);
+        }
+      }
+    } catch (error) {
+      console.warn('Supabase initial fetch failed, using local cached data:', error);
+    } finally {
+      setDbLoading(false);
+    }
+  }, [user]);
+
+  // Auth Lifecycle Listener
+  useEffect(() => {
+    let mounted = true;
+
+    async function initAuth() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (mounted) {
+          setUser(session?.user || null);
+          if (session?.user) {
+            const prof = await db.fetchUserProfile(session.user.id);
+            setUserProfile(prof || { id: session.user.id, email: session.user.email || '' });
+          }
+          setAuthLoading(false);
+        }
+      } catch (err) {
+        console.error('Auth initialization error:', err);
+        if (mounted) setAuthLoading(false);
+      }
+    }
+
+    initAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!mounted) return;
+      const currentUser = session?.user || null;
+      setUser(currentUser);
+      if (currentUser) {
+        const prof = await db.fetchUserProfile(currentUser.id);
+        setUserProfile(prof || { id: currentUser.id, email: currentUser.email || '' });
+      } else {
+        setUserProfile(null);
+      }
+      setAuthLoading(false);
+      refreshDatabaseData();
     });
-    showToast('success', 'Profil Berhasil Disimpan', 'Data peternakan diperbarui.');
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [refreshDatabaseData]);
+
+  // Initial DB Load and Connection Verification on Mount
+  useEffect(() => {
+    async function verifyAndLoad() {
+      try {
+        const conn = await checkSupabaseConnection();
+        if (conn.connected) {
+          setSyncStatus('synced');
+        } else {
+          console.info('Supabase connection info:', conn.message);
+        }
+      } catch (e) {
+        console.warn('Connection check error:', e);
+      }
+      refreshDatabaseData();
+    }
+    verifyAndLoad();
+  }, [refreshDatabaseData]);
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setUserProfile(null);
+    showToast('info', 'Berhasil Keluar', 'Sesi login telah diakhiri.');
   };
 
-  // Jumlah ayam produktif aktif yang disinkronkan dengan data ayam
+  const updateFarmProfile = async (data: Partial<FarmProfile>) => {
+    setFarm((prev) => ({ ...prev, ...data }));
+    const res = await db.updateFarm(farm.id, data, user?.id);
+    if (res.success) {
+      showToast('success', 'Profil Berhasil Disimpan', 'Data peternakan diperbarui di Supabase.');
+    } else if (res.error && res.error.includes('row-level security')) {
+      showToast(
+        'warning',
+        'RLS Policy Terdeteksi',
+        'Data tersimpan di perangkat. Jalankan RLS Policy SQL di Supabase SQL Editor atau Login terlebih dahulu.'
+      );
+    } else {
+      showToast('info', 'Profil Diperbarui', 'Data peternakan tersimpan di aplikasi.');
+    }
+  };
+
   const activeProductiveChickens = useMemo(() => {
     if (chickens.length > 0 && chickens[0]?.productiveQuantity > 0) {
       return chickens[0].productiveQuantity;
@@ -197,24 +348,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [chickens, farm.productiveChickens]);
 
   // Chicken CRUD
-  const addChicken = (record: Omit<ChickenRecord, 'id' | 'farmId' | 'createdAt'>) => {
+  const addChicken = async (record: Omit<ChickenRecord, 'id' | 'farmId' | 'createdAt'>) => {
+    const tempId = `chk-${Date.now()}`;
     const newRecord: ChickenRecord = {
       ...record,
-      id: `chk-${Date.now()}`,
+      id: tempId,
       farmId: farm.id,
       createdAt: new Date().toISOString(),
     };
     setChickens((prev) => [newRecord, ...prev]);
-    // Sync to farm profile
     setFarm((prev) => ({
       ...prev,
       totalChickens: record.quantity,
       productiveChickens: record.productiveQuantity,
     }));
+
+    const inserted = await db.insertChicken({ ...record, farmId: farm.id });
+    if (inserted) {
+      setChickens((prev) => prev.map((item) => (item.id === tempId ? inserted : item)));
+    }
     showToast('success', 'Data Ayam Ditambahkan', `Populasi ayam produktif ${record.productiveQuantity} ekor.`);
   };
 
-  const updateChicken = (id: string, record: Partial<ChickenRecord>) => {
+  const updateChicken = async (id: string, record: Partial<ChickenRecord>) => {
     setChickens((prev) => {
       const updated = prev.map((item) => (item.id === id ? { ...item, ...record } : item));
       if (updated[0]?.id === id && record.productiveQuantity !== undefined) {
@@ -226,38 +382,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       return updated;
     });
+
+    await db.updateChickenRecord(id, record);
     showToast('success', 'Data Ayam Diperbarui');
   };
 
-  const deleteChicken = (id: string) => {
+  const deleteChicken = async (id: string) => {
     setChickens((prev) => prev.filter((item) => item.id !== id));
+    await db.deleteChickenRecord(id);
     showToast('info', 'Data Ayam Dihapus');
   };
 
   // Harvest CRUD
-  const addHarvest = (record: Omit<HarvestRecord, 'id' | 'farmId' | 'createdAt'>) => {
+  const addHarvest = async (record: Omit<HarvestRecord, 'id' | 'farmId' | 'createdAt'>) => {
+    const tempId = `hrv-${Date.now()}`;
     const newRecord: HarvestRecord = {
       ...record,
       productiveChickens: record.productiveChickens || activeProductiveChickens,
-      id: `hrv-${Date.now()}`,
+      id: tempId,
       farmId: farm.id,
       createdAt: new Date().toISOString(),
     };
     setHarvests((prev) => [newRecord, ...prev]);
+
+    const inserted = await db.insertHarvest({
+      ...record,
+      productiveChickens: record.productiveChickens || activeProductiveChickens,
+      farmId: farm.id,
+    });
+    if (inserted) {
+      setHarvests((prev) => prev.map((item) => (item.id === tempId ? inserted : item)));
+    }
     showToast('success', 'Panen Berhasil Dicatat', `Stok telur bertambah ${record.totalWeight} kg.`);
   };
 
-  const updateHarvest = (id: string, record: Partial<HarvestRecord>) => {
+  const updateHarvest = async (id: string, record: Partial<HarvestRecord>) => {
     setHarvests((prev) => prev.map((item) => (item.id === id ? { ...item, ...record } : item)));
+    await db.updateHarvestRecord(id, record);
     showToast('success', 'Data Panen Diperbarui');
   };
 
-  const deleteHarvest = (id: string) => {
+  const deleteHarvest = async (id: string) => {
     setHarvests((prev) => prev.filter((item) => item.id !== id));
+    await db.deleteHarvestRecord(id);
     showToast('info', 'Data Panen Dihapus', 'Stok telur diperbarui kembali.');
   };
 
-  // Compute total current stock before sales validation
+  // Real-time stock computation
   const totalHarvestWeight = useMemo(() => {
     return harvests.reduce((acc, h) => acc + (Number(h.totalWeight) || 0), 0);
   }, [harvests]);
@@ -270,8 +441,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return Math.max(0, farm.initialStock + totalHarvestWeight - totalSoldWeight);
   }, [farm.initialStock, totalHarvestWeight, totalSoldWeight]);
 
-  // Sales CRUD with strict stock verification (Business rule 3 & 4)
-  const addSale = (record: Omit<SaleRecord, 'id' | 'farmId' | 'createdAt'>) => {
+  // Sales CRUD
+  const addSale = async (record: Omit<SaleRecord, 'id' | 'farmId' | 'createdAt'>) => {
     if (record.quantity > currentStock) {
       showToast(
         'error',
@@ -284,13 +455,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     }
 
+    const tempId = `sal-${Date.now()}`;
     const newRecord: SaleRecord = {
       ...record,
-      id: `sal-${Date.now()}`,
+      id: tempId,
       farmId: farm.id,
       createdAt: new Date().toISOString(),
     };
     setSales((prev) => [newRecord, ...prev]);
+
+    const inserted = await db.insertSale({ ...record, farmId: farm.id });
+    if (inserted) {
+      setSales((prev) => prev.map((item) => (item.id === tempId ? inserted : item)));
+    }
+
     showToast(
       'success',
       'Penjualan Berhasil',
@@ -299,7 +477,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true };
   };
 
-  const updateSale = (id: string, record: Partial<SaleRecord>) => {
+  const updateSale = async (id: string, record: Partial<SaleRecord>) => {
     const existing = sales.find((s) => s.id === id);
     if (!existing) return { success: false, error: 'Transaksi tidak ditemukan' };
 
@@ -317,245 +495,270 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     setSales((prev) => prev.map((item) => (item.id === id ? { ...item, ...record } : item)));
+    await db.updateSaleRecord(id, record);
     showToast('success', 'Penjualan Diperbarui');
     return { success: true };
   };
 
-  const deleteSale = (id: string) => {
+  const deleteSale = async (id: string) => {
     setSales((prev) => prev.filter((item) => item.id !== id));
+    await db.deleteSaleRecord(id);
     showToast('info', 'Penjualan Dihapus', 'Stok telur bertambah kembali.');
   };
 
   // Expenses CRUD
-  const addExpense = (record: Omit<ExpenseRecord, 'id' | 'farmId' | 'createdAt'>) => {
+  const addExpense = async (record: Omit<ExpenseRecord, 'id' | 'farmId' | 'createdAt'>) => {
+    const tempId = `exp-${Date.now()}`;
     const newRecord: ExpenseRecord = {
       ...record,
-      id: `exp-${Date.now()}`,
+      id: tempId,
       farmId: farm.id,
       createdAt: new Date().toISOString(),
     };
     setExpenses((prev) => [newRecord, ...prev]);
+
+    const inserted = await db.insertExpense({ ...record, farmId: farm.id });
+    if (inserted) {
+      setExpenses((prev) => prev.map((item) => (item.id === tempId ? inserted : item)));
+    }
     showToast('success', 'Pengeluaran Dicatat', `${record.category}: Rp ${record.amount.toLocaleString('id-ID')}`);
   };
 
-  const updateExpense = (id: string, record: Partial<ExpenseRecord>) => {
+  const updateExpense = async (id: string, record: Partial<ExpenseRecord>) => {
     setExpenses((prev) => prev.map((item) => (item.id === id ? { ...item, ...record } : item)));
+    await db.updateExpenseRecord(id, record);
     showToast('success', 'Pengeluaran Diperbarui');
   };
 
-  const deleteExpense = (id: string) => {
+  const deleteExpense = async (id: string) => {
     setExpenses((prev) => prev.filter((item) => item.id !== id));
+    await db.deleteExpenseRecord(id);
     showToast('info', 'Pengeluaran Dihapus');
   };
 
-  // Profit Allocation CRUD
-  const addAllocation = (record: Omit<ProfitAllocation, 'id' | 'farmId' | 'createdAt'>) => {
+  // Allocations CRUD
+  const addAllocation = async (record: Omit<ProfitAllocation, 'id' | 'farmId' | 'createdAt'>) => {
+    const tempId = `alc-${Date.now()}`;
     const newRecord: ProfitAllocation = {
       ...record,
-      id: `alloc-${Date.now()}`,
+      id: tempId,
       farmId: farm.id,
       createdAt: new Date().toISOString(),
     };
     setAllocations((prev) => [newRecord, ...prev]);
+
+    const inserted = await db.insertAllocation({ ...record, farmId: farm.id });
+    if (inserted) {
+      setAllocations((prev) => prev.map((item) => (item.id === tempId ? inserted : item)));
+    }
     showToast(
       'success',
-      'Konversi Berhasil Disimpan',
-      `Alokasi modal Rp ${record.profit.toLocaleString('id-ID')} tersimpan ke riwayat.`
+      'Konversi Modal Berhasil',
+      `Alokasi modal Rp ${record.profit.toLocaleString('id-ID')} tersimpan di Supabase.`
     );
   };
 
-  const deleteAllocation = (id: string) => {
+  const deleteAllocation = async (id: string) => {
     setAllocations((prev) => prev.filter((item) => item.id !== id));
-    showToast('info', 'Riwayat Konversi Dihapus');
+    await db.deleteAllocationRecord(id);
+    showToast('info', 'Alokasi Dihapus');
   };
 
   // Settings
-  const updateSettings = (newSettings: AllocationSettings) => {
+  const updateSettings = async (newSettings: AllocationSettings) => {
     setSettings(newSettings);
-    showToast('success', 'Pengaturan Tersimpan', 'Persentase alokasi modal telah diperbarui.');
+    await db.upsertAllocationSettings({ ...newSettings, farmId: farm.id });
+    showToast('success', 'Pengaturan Disimpan', 'Persentase alokasi modal berhasil diperbarui.');
   };
 
-  const resetSettingsToDefault = () => {
-    setSettings({ ...DEFAULT_ALLOCATION_SETTINGS, farmId: farm.id });
-    showToast('info', 'Pengaturan Direset', 'Persentase dikembalikan ke default standar peternakan.');
+  const resetSettingsToDefault = async () => {
+    const defaultSettings: AllocationSettings = {
+      ...DEFAULT_ALLOCATION_SETTINGS,
+      farmId: farm.id,
+      updatedAt: new Date().toISOString(),
+    };
+    setSettings(defaultSettings);
+    await db.upsertAllocationSettings(defaultSettings);
+    showToast('info', 'Pengaturan Di-reset', 'Persentase alokasi kembali ke bawaan sistem.');
   };
 
-  // Stock Movement Ledger
-  const stockMovements = useMemo(() => {
-    const events: {
+  // Stock Movements
+  const stockMovements: StockMovement[] = useMemo(() => {
+    const movements: StockMovement[] = [];
+    let runningBalance = farm.initialStock;
+
+    movements.push({
+      id: 'init-stock',
+      date: '2026-10-01',
+      type: 'PENYESUAIAN',
+      description: 'Stok Awal Periode',
+      inWeight: farm.initialStock,
+      outWeight: 0,
+      balance: runningBalance,
+    });
+
+    const allEvents: Array<{
       date: string;
-      createdAt: string;
       type: 'PANEN' | 'PENJUALAN';
+      weight: number;
+      refId: string;
       description: string;
-      inWeight: number;
-      outWeight: number;
-      id: string;
-    }[] = [];
+    }> = [];
 
     harvests.forEach((h) => {
-      events.push({
-        id: `m-h-${h.id}`,
+      allEvents.push({
         date: h.date,
-        createdAt: h.createdAt,
         type: 'PANEN',
-        description: `Panen (${h.totalWeight} kg)`,
-        inWeight: h.totalWeight,
-        outWeight: 0,
+        weight: h.totalWeight,
+        refId: h.id,
+        description: `Panen Telur (${h.totalWeight} kg)`,
       });
     });
 
     sales.forEach((s) => {
-      events.push({
-        id: `m-s-${s.id}`,
+      allEvents.push({
         date: s.date,
-        createdAt: s.createdAt,
         type: 'PENJUALAN',
-        description: s.customer ? `Penjualan ${s.customer}` : `Penjualan Telur (${s.quantity} kg)`,
-        inWeight: 0,
-        outWeight: s.quantity,
+        weight: s.quantity,
+        refId: s.id,
+        description: `Penjualan Telur (${s.quantity} kg) - ${s.customer || 'Tunai'}`,
       });
     });
 
-    // Sort ascending to calculate running balance
-    events.sort((a, b) => {
-      if (a.date !== b.date) return a.date.localeCompare(b.date);
-      return a.createdAt.localeCompare(b.createdAt);
+    allEvents.sort((a, b) => a.date.localeCompare(b.date));
+
+    allEvents.forEach((event, idx) => {
+      if (event.type === 'PANEN') {
+        runningBalance += event.weight;
+        movements.push({
+          id: `mov-${event.refId}-${idx}`,
+          date: event.date,
+          type: 'PANEN',
+          description: event.description,
+          inWeight: event.weight,
+          outWeight: 0,
+          balance: runningBalance,
+          referenceId: event.refId,
+        });
+      } else {
+        runningBalance -= event.weight;
+        movements.push({
+          id: `mov-${event.refId}-${idx}`,
+          date: event.date,
+          type: 'PENJUALAN',
+          description: event.description,
+          inWeight: 0,
+          outWeight: event.weight,
+          balance: runningBalance,
+          referenceId: event.refId,
+        });
+      }
     });
 
-    let runningBalance = farm.initialStock;
-    const ledger: StockMovement[] = events.map((e) => {
-      runningBalance = runningBalance + e.inWeight - e.outWeight;
-      return {
-        id: e.id,
-        date: e.date,
-        type: e.type,
-        description: e.description,
-        inWeight: e.inWeight,
-        outWeight: e.outWeight,
-        balance: Math.round(runningBalance * 10) / 10,
-      };
-    });
-
-    // Return reversed so latest is top
-    return ledger.reverse();
+    return movements.reverse();
   }, [farm.initialStock, harvests, sales]);
 
-  // Derived Dashboard Stats
-  const todayDateStr = useMemo(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
-      now.getDate()
-    ).padStart(2, '0')}`;
-  }, []);
-
-  // Tanggal harian aktif (mengutamakan hari ini atau tanggal transaksi terbaru)
   const todayActiveDateStr = useMemo(() => {
-    const hasTodayData = sales.some((s) => s.date === todayDateStr) || expenses.some((e) => e.date === todayDateStr);
-    if (hasTodayData) return todayDateStr;
-    return sales[0]?.date || expenses[0]?.date || harvests[0]?.date || todayDateStr;
-  }, [sales, expenses, harvests, todayDateStr]);
+    const dates = [
+      ...harvests.map((h) => h.date),
+      ...sales.map((s) => s.date),
+      ...expenses.map((e) => e.date),
+    ];
+    if (dates.length === 0) return '2026-10-07';
+    dates.sort((a, b) => b.localeCompare(a));
+    return dates[0];
+  }, [harvests, sales, expenses]);
 
   const todayHarvestKg = useMemo(() => {
-    const todayRecs = harvests.filter((h) => h.date === todayActiveDateStr);
-    if (todayRecs.length > 0) {
-      return todayRecs.reduce((acc, h) => acc + h.totalWeight, 0);
-    }
-    return harvests[0]?.totalWeight || 0;
+    return harvests
+      .filter((h) => h.date === todayActiveDateStr)
+      .reduce((acc, h) => acc + (Number(h.totalWeight) || 0), 0);
   }, [harvests, todayActiveDateStr]);
 
   const todaySalesAmount = useMemo(() => {
-    const todayRecs = sales.filter((s) => s.date === todayActiveDateStr);
-    return todayRecs.reduce((acc, s) => acc + s.total, 0);
+    return sales
+      .filter((s) => s.date === todayActiveDateStr)
+      .reduce((acc, s) => acc + (Number(s.total) || 0), 0);
   }, [sales, todayActiveDateStr]);
 
   const todayExpensesAmount = useMemo(() => {
-    const todayRecs = expenses.filter((e) => e.date === todayActiveDateStr);
-    return todayRecs.reduce((acc, e) => acc + e.amount, 0);
+    return expenses
+      .filter((e) => e.date === todayActiveDateStr)
+      .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
   }, [expenses, todayActiveDateStr]);
 
   const todayProfitAmount = useMemo(() => {
-    return todaySalesAmount - todayExpensesAmount;
+    return Math.max(0, todaySalesAmount - todayExpensesAmount);
   }, [todaySalesAmount, todayExpensesAmount]);
 
-  // Fungsi konversi keuntungan harian otomatis langsung ke modal
-  const convertDailyProfitToCapital = (targetDate?: string) => {
-    const dateToUse = targetDate || todayActiveDateStr;
-    const daySales = sales.filter((s) => s.date === dateToUse).reduce((acc, s) => acc + s.total, 0);
-    const dayExpenses = expenses.filter((e) => e.date === dateToUse).reduce((acc, e) => acc + e.amount, 0);
-    const dayProfit = daySales - dayExpenses;
+  const monthExpensesAmount = useMemo(() => {
+    return expenses
+      .filter((e) => e.date.startsWith('2026-10'))
+      .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+  }, [expenses]);
 
-    if (dayProfit <= 0) {
-      showToast(
-        'warning',
-        'Belum Ada Keuntungan Harian',
-        `Omzet (Rp ${daySales.toLocaleString('id-ID')}) dikurangi pengeluaran (Rp ${dayExpenses.toLocaleString('id-ID')}) belum menghasilkan laba positif.`
-      );
-      return { success: false, message: 'Keuntungan belum positif' };
+  const monthSalesAmount = useMemo(() => {
+    return sales
+      .filter((s) => s.date.startsWith('2026-10'))
+      .reduce((acc, s) => acc + (Number(s.total) || 0), 0);
+  }, [sales]);
+
+  const monthProfitAmount = useMemo(() => {
+    return Math.max(0, monthSalesAmount - monthExpensesAmount);
+  }, [monthSalesAmount, monthExpensesAmount]);
+
+  const convertDailyProfitToCapital = async (
+    targetDate?: string
+  ): Promise<{ success: boolean; message: string; allocation?: ProfitAllocation }> => {
+    const dateToProcess = targetDate || todayActiveDateStr;
+
+    const daySales = sales
+      .filter((s) => s.date === dateToProcess)
+      .reduce((acc, s) => acc + (Number(s.total) || 0), 0);
+
+    const dayExpenses = expenses
+      .filter((e) => e.date === dateToProcess)
+      .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+
+    const dayNetProfit = daySales - dayExpenses;
+
+    if (dayNetProfit <= 0) {
+      const msg = `Keuntungan bersih pada ${formatTanggal(dateToProcess)} adalah Rp 0 atau minus, tidak ada modal untuk dikonversi.`;
+      showToast('warning', 'Konversi Tidak Dapat Diproses', msg);
+      return { success: false, message: msg };
     }
 
-    const calc = calculateProfitAllocation(dayProfit, settings);
-    const existingIndex = allocations.findIndex(
-      (a) => a.date === dateToUse && a.notes?.includes('Keuntungan Harian')
-    );
+    const calculated = calculateProfitAllocation(dayNetProfit, settings);
 
     const newRecord: ProfitAllocation = {
-      id: existingIndex >= 0 ? allocations[existingIndex].id : `alloc-daily-${Date.now()}`,
+      id: `alc-${Date.now()}`,
       farmId: farm.id,
-      date: dateToUse,
-      profit: dayProfit,
-      feedAmount: calc.feedAmount,
-      chickenAmount: calc.chickenAmount,
-      laborAmount: calc.laborAmount,
-      electricityAmount: calc.electricityAmount,
-      waterAmount: calc.waterAmount,
-      vitaminAmount: calc.vitaminAmount,
+      date: dateToProcess,
+      profit: dayNetProfit,
+      feedAmount: calculated.feedAmount,
+      chickenAmount: calculated.chickenAmount,
+      laborAmount: calculated.laborAmount,
+      electricityAmount: calculated.electricityAmount,
+      waterAmount: calculated.waterAmount,
+      vitaminAmount: calculated.vitaminAmount,
       feedPercentage: settings.feedPercentage,
       chickenPercentage: settings.chickenPercentage,
       laborPercentage: settings.laborPercentage,
       electricityPercentage: settings.electricityPercentage,
       waterPercentage: settings.waterPercentage,
       vitaminPercentage: settings.vitaminPercentage,
-      notes: `Konversi Otomatis Keuntungan Harian (${formatTanggal(dateToUse)})`,
+      notes: `Konversi otomatis laba harian tanggal ${formatTanggal(dateToProcess)}`,
       createdAt: new Date().toISOString(),
     };
 
-    if (existingIndex >= 0) {
-      setAllocations((prev) => prev.map((a, i) => (i === existingIndex ? newRecord : a)));
-      showToast(
-        'success',
-        'Konversi Modal Harian Diperbarui',
-        `Laba harian Rp ${dayProfit.toLocaleString('id-ID')} berhasil dicatat ke Konversi Modal.`
-      );
-    } else {
-      setAllocations((prev) => [newRecord, ...prev]);
-      showToast(
-        'success',
-        'Konversi Modal Harian Berhasil Dicatat!',
-        `Laba harian Rp ${dayProfit.toLocaleString('id-ID')} langsung dicatat ke Konversi Modal.`
-      );
-    }
+    setAllocations((prev) => [newRecord, ...prev]);
+    await db.insertAllocation({ ...newRecord, farmId: farm.id });
 
-    return { success: true, message: 'Berhasil dikonversi', allocation: newRecord };
+    const successMsg = `Berhasil mengonversi keuntungan Rp ${dayNetProfit.toLocaleString('id-ID')} menjadi modal operasional.`;
+    showToast('success', 'Konversi Berhasil!', successMsg);
+
+    return { success: true, message: successMsg, allocation: newRecord };
   };
-
-  const currentMonthStr = useMemo(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  }, []);
-
-  const monthExpensesAmount = useMemo(() => {
-    const monthRecs = expenses.filter((e) => e.date.startsWith(currentMonthStr));
-    return monthRecs.reduce((acc, e) => acc + e.amount, 0);
-  }, [expenses, currentMonthStr]);
-
-  const monthSalesAmount = useMemo(() => {
-    const monthRecs = sales.filter((s) => s.date.startsWith(currentMonthStr));
-    return monthRecs.reduce((acc, s) => acc + s.total, 0);
-  }, [sales, currentMonthStr]);
-
-  const monthProfitAmount = useMemo(() => {
-    return monthSalesAmount - monthExpensesAmount;
-  }, [monthSalesAmount, monthExpensesAmount]);
 
   const totalChickensLatest = useMemo(() => {
     return chickens[0]?.quantity || farm.totalChickens || 1000;
@@ -573,7 +776,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSales(INITIAL_SALES);
     setExpenses(INITIAL_EXPENSES);
     setAllocations(INITIAL_PROFIT_ALLOCATIONS);
-    showToast('info', 'Data Demo Dipulihkan', 'Semua data telah dikembalikan ke kondisi demo awal.');
+    showToast('info', 'Data Demo Dipulihkan', 'Semua data telah dikembalikan ke kondisi awal.');
   };
 
   const saveSupabaseConfig = (url: string, key: string) => {
@@ -581,13 +784,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSyncStatus('connecting');
     setTimeout(() => {
       setSyncStatus('synced');
-      showToast('success', 'Konfigurasi Supabase Disimpan', 'Penyimpanan lokal siap disinkronisasi.');
+      refreshDatabaseData();
+      showToast('success', 'Konfigurasi Supabase Disimpan', 'Sinkronisasi database aktif.');
     }, 800);
   };
 
   return (
     <AppContext.Provider
       value={{
+        user,
+        userProfile,
+        authLoading,
+        isAuthDialogOpen,
+        setIsAuthDialogOpen,
+        signOut,
+        dbLoading,
+        refreshDatabaseData,
         farm,
         setFarm,
         updateFarmProfile,

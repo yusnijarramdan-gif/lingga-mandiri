@@ -10,6 +10,7 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
+      dedupe: ['react', 'react-dom', '@emotion/react', '@emotion/styled', '@mui/material'],
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
