@@ -1,0 +1,6 @@
+{
+  "name": "TelurKu - Manajemen Usaha Peternakan Telur",
+  "description": "Aplikasi manajemen usaha peternak ayam petelur modern: pencatatan ayam, panen, stok, penjualan, pengeluaran, keuntungan, dan konversi modal otomatis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
